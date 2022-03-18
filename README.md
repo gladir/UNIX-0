@@ -64,6 +64,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td><b>LS.PAS</b></td>
 			<td>Cette commande permet d'afficher les fichiers d'un répertoire. Cette commande est équivalent de UNIX.</td>
 		</tr>
+		<tr>
+			<td><b>MV.PAS</b></td>
+			<td>Cette commande permet de déplacer un fichier.</td>
+		</tr>
   	<tr>
 			<td><b>OD.PAS</b></td>
 			<td>Cette commande permet d'afficher le contenu d'un fichier selon un format spécifique. Cette commande est un équivalent de UNIX.</td>
