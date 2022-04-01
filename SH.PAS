@@ -21,6 +21,9 @@ Const
   'unalias','unset','wc','whereis','who','write'
  );
 
+Type
+ DeleteOption=Set Of (Question,Verbose);
+
 Var
  CommandFound,Terminated:Boolean;
  CmdStr:String;
@@ -63,6 +66,42 @@ Var
 Begin
  For I:=1 to Length(Str)do Begin
   If Str[I]=OldChar Then Str[I]:=NewChar;
+ End;
+End;
+
+Function GetErrorMessage(Code:Word):String;Begin
+ Case Code of
+  0:GetErrorMessage:='';
+  2:GetErrorMessage:='Fichier introuvable';
+  3:GetErrorMessage:='Chemin introuvable';
+  4:GetErrorMessage:='Trop de fichiers ouvert';
+  5:GetErrorMessage:='Acces refuse';
+  6:GetErrorMessage:='Handle de fichier invalide';
+  12:GetErrorMessage:='Mode d''acces sur disque invalide';
+  15:GetErrorMessage:='Num‚ro de disque invalide';
+  16:GetErrorMessage:='Impossible de supprimer le r‚pertoire';
+  17:GetErrorMessage:='Impossible de renommer sur plusieurs volumes';
+  100:GetErrorMessage:='Erreur de lecture … partir du disque';
+  101:GetErrorMessage:='Erreur d''ecriture sur le disque';
+  102:GetErrorMessage:='Fichier non attribue';
+  103:GetErrorMessage:='Le fichier n''est pas ouvert';
+  104:GetErrorMessage:='Le fichier n''est pas ouvert … l''entree';
+  105:GetErrorMessage:='Le fichier n''est pas ouvert … la sortie';
+  106:GetErrorMessage:='Numero invalide';
+  150:GetErrorMessage:='Disque protege en ecriture';
+  151:GetErrorMessage:='Peripherique est inconnu';
+  152:GetErrorMessage:='Disque pas pret';
+  153:GetErrorMessage:='Commande inconnue';
+  154:GetErrorMessage:='Echec de verification CRC';
+  155:GetErrorMessage:='Disque invalide';
+  156:GetErrorMessage:='Erreur de recherche sur disque';
+  157:GetErrorMessage:='Type de media invalide';
+  158:GetErrorMessage:='Secteur introuvable';
+  159:GetErrorMessage:='L''imprimante n''a plus de papier';
+  160:GetErrorMessage:='Erreur d''ecriture sur le peripherique';
+  161:GetErrorMessage:='Erreur de lecture sur le peripherique';
+  162:GetErrorMessage:='Defaillance materielle';
+  Else GetErrorMessage:='Erreur inconnue';
  End;
 End;
 
@@ -109,6 +148,125 @@ Begin
  End;
  ExtractParam:=Temp;
 End;
+
+Function SplitFileName(s:String):String;
+Var
+ D:DirStr;
+ N:NameStr;
+ E:ExtStr;
+Begin
+ FSplit(S,D,N,E);
+ Splitfilename:=N+E;
+End;
+
+Function CopyFile(Source,Target:String):Boolean;
+Var
+ SourceFile,TargetFile:File;
+ RecordsRead:Integer;
+ Buffer:Array[1..1000]of Byte;
+Begin
+ CopyFile:=False;
+ Assign(SourceFile,Source);
+ {$I-}Reset(SourceFile,1);{$I+}
+ If IOResult<>0Then Begin
+  WriteLn('Fichier source introuvable ',Source);
+  Exit;
+ End;
+ Assign(TargetFile,Target);
+ {$I-}Rewrite(TargetFile,1);
+ BlockRead(SourceFile,Buffer,SizeOf(Buffer),RecordsRead);
+ While RecordsRead>0 do Begin
+  BlockWrite(TargetFile,Buffer,RecordsRead);
+  BlockRead(SourceFile,Buffer,SizeOf(Buffer),RecordsRead);
+ End;
+ Close(SourceFile);
+ Close(TargetFile);
+ {$I+}
+ CopyFile:=True;
+End;
+
+
+Function MoveFile(Source,Target:String):Boolean;
+Var
+ F:File;
+Begin
+ If(Source='')or(Target='')Then Begin
+  MoveFile:=False;
+  Exit;
+ End;
+ Source:=FExpand(Source);
+ Target:=FExpand(Target);
+ If(Source[1]<>Target[1])and(Source[2]=':')Then Begin { Unite de disque different ?}
+   { Copie le fichier }
+  MoveFile:=CopyFile(Source,Target);
+   { Supprime le fichier }
+  {$I-}Assign(F,Source);
+  Erase(F);
+  {$I+}
+ End
+  Else
+ Begin
+  {$I-}
+  Assign(F,Source);
+  Rename(F,Target+'\'+SplitFileName(Source));
+  MoveFile:=IOResult=0;
+  {$I+}
+ End;
+End;
+
+Function DeleteFile(FileName:String):Integer;
+Var
+ F:File;
+Begin
+ {$I-}Assign(F,FileName);
+ Erase(F);
+ {$I+}
+ DeleteFile:=IoResult;
+End;
+
+Procedure DeleteTree(Option:DeleteOption;Dir:String);
+Var
+ Info:SearchRec;
+ Err:Word;
+Begin
+ FindFirst(Dir+'\*.*',AnyFile,Info);
+ While DOSError=0do Begin
+  If Info.Attr and Directory=Directory Then Begin
+   If(Info.Name<>'.')and(Info.Name<>'..')Then DeleteTree(Option,Dir+'\'+Info.Name);
+  End
+   Else
+  Begin
+   If(Question in Option)Then Begin
+    Write('Supprimer ',Info.Name,' (O/N) ? ');
+    Case ReadKey of
+     #27:Exit;
+     'O','o':Begin
+      Err:=DeleteFile(Dir+'\'+Info.Name);
+      WriteLn('Oui');
+      If Err=0Then Begin
+       If(Verbose in Option)Then WriteLn(Info.Name,' a ete supprime');
+      End
+       Else
+      WriteLn(GetErrorMessage(Err));
+     End;
+     Else WriteLn('Non');
+    End;
+    WriteLn;
+   End
+    Else
+   Begin
+    Err:=DeleteFile(Dir+'\'+Info.Name);
+    If Err=0Then Begin
+     If(Verbose in Option)Then WriteLn(Info.Name,' a ete supprime');
+    End
+     Else
+    WriteLn(GetErrorMessage(Err));
+   End;
+  End;
+  FindNext(Info);
+ End;
+ {$I-}RmDir(Dir);{$I+}
+END;
 
 Procedure HomeMessage;Begin
  WriteLn;
@@ -533,8 +691,27 @@ Procedure MoreCommand;Begin
  WriteLn('Cette commande n''est pas mise en oeuvre');
 End;
 
-Procedure MvCommand;Begin
- WriteLn('Cette commande n''est pas mise en oeuvre');
+Procedure MvCommand;
+Var
+ CurrParam1,CurrParam2:String;
+Begin
+ If(ExtractParam(1)='/?')or(ExtractParam(1)='--help')or(ExtractParam(1)='-h')Then Begin
+  WriteLn('mv : Cette commande permet de deplacer un fichier.');
+  WriteLn;
+  WriteLn('Syntaxe : mv source destination');
+ End
+  Else
+ Begin
+  CurrParam1:=ExtractParam(1);
+  CurrParam2:=ExtractParam(2);
+  If(CurrParam1<>'')and(CurrParam2<>'')Then Begin
+   If Not MoveFile(CurrParam1,CurrParam2)Then Begin
+    WriteLn('Erreur de d‚placement du fichier.');
+   End;
+  End
+   Else
+  WriteLn('Nombre de parametre invalide');
+ End;
 End;
 
 Procedure NewsCommand;Begin
@@ -596,8 +773,82 @@ Procedure ReturnCommand;Begin
  WriteLn('Cette commande n''est pas mise en oeuvre');
 End;
 
-Procedure RmCommand;Begin
- WriteLn('Cette commande n''est pas mise en oeuvre');
+Procedure RmCommand;
+Var
+ Mode:(_None,_r);
+ P:Byte;
+ Err:Word;
+ Option:DeleteOption;
+ CurrParam:String;
+Begin
+ Mode:=_None;
+ Option:=[];
+ P:=0;
+ Repeat
+  Inc(P);
+  CurrParam:=ExtractParam(P);
+  If CurrParam=''Then Begin
+   If P=1Then Begin
+    WriteLn('ParamŠtre requis');
+   End;
+   Break;
+  End
+   Else
+  If Mode=_r Then Begin
+   DeleteTree(Option,CurrParam);
+  End
+   Else
+  If(CurrParam='-h')or(CurrParam='--help')Then Begin
+   WriteLn('rm   Cette commande permet d''effectuer la suppression de fichier sur un unite de disque.');
+   WriteLn;
+   WriteLn('Syntaxe:');
+   WriteLn;
+   WriteLn('rm [-h] [-i][-v] [-r repertoire] [fichier]');
+   WriteLn;
+   WriteLn('    -h          Ce parametre permet d''afficher l''aide sur cette commande');
+   WriteLn('    -i          Ce parametre permet de demander une confirmation avant de supprimer');
+   WriteLn('    -r          Ce parametre permet de supprimer le repertoire recursivement');
+   WriteLn('    --recursive Ce parametre permet de supprimer le repertoire recursivement');
+   WriteLn('    -v          Ce parametre permet d''afficher les fichiers supprimees.');
+   WriteLn('    --verbose   Ce parametre permet d''afficher les fichiers supprimees.');
+   WriteLn(' fichier        Ce parametre permet d''indiquer le nom du fichier a supprimer.');
+   Exit;
+  End
+   Else
+  If CurrParam='-i'Then Include(Option,Question) Else
+  If(CurrParam='-r')or(CurrParam='--recursive')Then Mode:=_r Else
+  If(CurrParam='-v')or(CurrParam='--verbose')Then Include(Option,Verbose)
+   Else
+  Begin
+   If(Question in Option)Then Begin
+    Write('Supprimer ',CurrParam,' (O/N) ? ');
+    Case ReadKey of
+     #27:Exit;
+     'O','o':Begin
+      Err:=DeleteFile(CurrParam);
+      WriteLn('Oui');
+      If Err=0Then Begin
+       If(Verbose in Option)Then WriteLn(CurrParam,' a ete supprime');
+      End
+       Else
+      WriteLn(GetErrorMessage(Err));
+     End;
+     Else WriteLn('Non');
+    End;
+    WriteLn;
+   End
+    Else
+   Begin
+    Err:=DeleteFile(CurrParam);
+    If Err=0Then Begin
+     If(Verbose in Option)Then WriteLn(CurrParam,' a ete supprime');
+    End
+     Else
+    WriteLn(GetErrorMessage(Err));
+   End;
+  End;
+  If P>99Then Break;
+ Until CurrParam='';
 End;
 
 Procedure RmdirCommand;
