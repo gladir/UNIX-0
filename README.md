@@ -25,6 +25,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet de retourner le nom du fichier seulement à partir d'un chemin complet de nom de fichier. Cette commande est un équivalent de UNIX.</td>
 		</tr>
 		<tr>
+			<td><b>BASH.PAS</b></td>
+			<td>Cette commande permet de lancer l'interpréteur de commande BASH.</td>
+		</tr>
+		<tr>
 			<td><b>CAL.PAS</b></td>
 			<td>Cette commande permet d'afficher un calendrier. Cette commande est un équivalent de MSX-DOS ou UNIX.</td>
 		</tr>
@@ -63,6 +67,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 		<tr>
 			<td><b>LS.PAS</b></td>
 			<td>Cette commande permet d'afficher les fichiers d'un répertoire. Cette commande est équivalent de UNIX.</td>
+		</tr>
+		<tr>
+			<td><b>MV.PAS</b></td>
+			<td>Cette commande permet de déplacer un fichier.</td>
 		</tr>
   	<tr>
 			<td><b>OD.PAS</b></td>
