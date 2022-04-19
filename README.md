@@ -37,6 +37,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet d'afficher le contenu d'un/des fichiers. Cette commande est un équivalent de UNIX.</td>
 		</tr>
 		<tr>
+			<td><b>CP.PAS</b></td>
+			<td>Cette commande permet de copier un fichier. Cette commande est inspiré de la commande UNIX.</td>
+		</tr>
+		<tr>
 			<td><b>CSH.PAS</b></td>
 			<td>Cette commande permet de lancer un interpréteur de commande C Shell.</td>
 		</tr>
