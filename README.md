@@ -53,6 +53,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet de supprimer des sections de chaque ligne des fichiers.</td>
 		</tr>
 		<tr>
+			<td><b>DF.PAS</b></td>
+			<td>Cette commande permet d'afficher l'espace libre sur le système de fichiers. C'est commande est inspiré de Linux et de cygwin.</td>
+		</tr>
+		<tr>
 			<td><b>DOS2UNIX.PAS</b></td>
 			<td>Cette commande permet d'effectuer la conversion des caractères de saut de ligne du système d'exploitation DOS en leur équivalent UNIX.</td>
 		</tr>
