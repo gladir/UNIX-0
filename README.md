@@ -140,11 +140,15 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td><b>TEE.PAS</b></td>
 			<td>Cette commande permet d'envoyer l'entrée standard vers la sortie standard. Cette commande est un équivalent de UNIX ou Linux.</td>
 		</tr>
-    <tr>
+    		<tr>
 			<td><b>TOUCH.PAS</b></td>
 			<td>Cette commande permet de changer la date et l'heure d'un fichier. Cette commande est un équivalent de UNIX, AIX et Linux.</td>
-    </tr>
-    <tr>
+    		</tr>
+		<tr>
+			<td><b>UNAME.PAS</b></td>
+			<td>Cette commande permet d'afficher des informations sur le système d'exploitation.</td>
+		</tr>
+    		<tr>
 			<td><b>WC.PAS</b>
 			<td>Cette commande permet de compter le nombre de mots, de lignes ou de caractères.</td>
 		</tr>
