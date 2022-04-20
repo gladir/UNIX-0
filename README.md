@@ -113,6 +113,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet d'afficher le chemin du répertoire courant. Cette commande est un équivalent de UNIX.</td>
 		</tr>
 		<tr>
+			<td><b>REBOOT.PAS</b></td>
+			<td>Cette commande permet de redémarrer l'ordinateur.</td>
+		</tr>
+		<tr>
 			<td><b>SH.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de commande UNIX.</td>
     </tr>
