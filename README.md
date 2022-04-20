@@ -65,6 +65,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet d'effectuer la conversion des caractères de saut de ligne du système d'exploitation DOS en leur équivalent UNIX.</td>
 		</tr>
 		<tr>
+			<td><b>ECHO.PAS</b></td>
+			<td>Cette commande permet d'afficher un message.</td>
+		</tr>
+		<tr>
 			<td><b>ENV.PAS</b></td>
 			<td>Cette commande permet de fixer ou de demander le contenu des variables d'environnement du système d'exploitaiton.</td>
 		</tr>
