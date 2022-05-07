@@ -76,6 +76,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td><b>ENV.PAS</b></td>
 			<td>Cette commande permet de fixer ou de demander le contenu des variables d'environnement du système d'exploitaiton.</td>
 		</tr>
+		<tr>
+			<td><b>FACTOR.PAS</b></td>
+			<td>Cette commande permet de calculer le facteur d'un nombre. Cette commande est inspiré de la commande factor de UNIX.</td>
+		</tr>
   	        <tr>
 			<td><b>FILE.PAS</b></td>
 			<td>Cette commande permet de demander le type de fichier. Cette commande est un équivalent de UNIX ou Linux.</td>
