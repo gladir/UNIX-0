@@ -93,6 +93,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet d'afficher le début d'un fichier texte. Cette commande est un équivalent de UNIX ou Linux.</td>
 		</tr>
 		<tr>
+			<td><b>HYPHEN.PAS</>
+			<td>Cette commande permet de rechercher les mots avec des traits-union. Cette commande est inspiré de la commande UNIX.</td>
+		</tr>
+		<tr>
 			<td><b>KSH.PAS</b>
 			<td>Cette commande permet de lancer un interpréteur de commande Korn SHell.</td>
 		</tr>
