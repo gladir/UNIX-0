@@ -101,6 +101,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet de lancer un interpréteur de commande Korn SHell.</td>
 		</tr>
 		<tr>
+			<td><b>LINE.PAS</b></td>
+			<td>Cette commande permet d'effectuer la lecture d'une ligne. Cette commande est inspiré de UNIX.</td>
+		</tr>
+		<tr>
 			<td><b>LP.PAS</b></td>
 			<td>Cette commande permet d'imprimer le contenu d'un fichier. Cette commande est équivalent de UNIX.</td>
 		</tr>	
