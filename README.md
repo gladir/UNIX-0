@@ -130,7 +130,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 		</tr>
 		<tr>
 			<td><b>PWD.PAS</b></td>
-			<td>Cette commande permet d'afficher le chemin du répertoire courant. Cette commande est un équivalent de UNIX.</td>
+			<td>Cette commande permet d'afficher le chemin du répertoire courant.</td>
 		</tr>
 		<tr>
 			<td><b>REBOOT.PAS</b></td>
@@ -142,28 +142,32 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
     </tr>
 		<tr>
 			<td><b>SLEEP.PAS</b></td>
-			<td>Cette commande permet d'attendre le nombre de secondes spécifiés. Cette commande est un équivalent de UNIX et LINUX.</td>
+			<td>Cette commande permet d'attendre le nombre de secondes spécifiés.</td>
 		</tr>
   	<tr>
 			<td><b>SPLIT.PAS</b></td>
-			<td>Cette commande permet de séparer un fichier en plusieurs fichiers. Cette commande est un équivalent de UNIX.</td>
+			<td>Cette commande permet de séparer un fichier en plusieurs fichiers.</td>
 		</tr>
 		<tr>
 			<td><b>STAT.PAS</b></td>
-			<td>Cette commande permet d'afficher des informations sur des fichiers. Cettte commande est un équivalent de UNIX et LINUX.</td>
+			<td>Cette commande permet d'afficher des informations sur des fichiers.</td>
 		</tr>	
 		<tr>
 			<td><b>TAIL.PAS</b>
-			<td>Cette commande permet d'afficher la fin d'un fichier texte. Cette commande est un équivalent de UNIX ou Linux.</td>
+			<td>Cette commande permet d'afficher la fin d'un fichier texte.</td>
 		</tr>
 	        <tr>
 			<td><b>TEE.PAS</b></td>
-			<td>Cette commande permet d'envoyer l'entrée standard vers la sortie standard. Cette commande est un équivalent de UNIX ou Linux.</td>
+			<td>Cette commande permet d'envoyer l'entrée standard vers la sortie standard.</td>
 		</tr>
     		<tr>
 			<td><b>TOUCH.PAS</b></td>
-			<td>Cette commande permet de changer la date et l'heure d'un fichier. Cette commande est un équivalent de UNIX, AIX et Linux.</td>
+			<td>Cette commande permet de changer la date et l'heure d'un fichier.</td>
     		</tr>
+		<tr>
+			<td><b>TRUE.PAS</b></td>
+			<td>Cette commande permet de retourner vrai. Cette command est inspiré de UNIX et Linux.</td>
+		</tr>	
 		<tr>
 			<td><b>UNAME.PAS</b></td>
 			<td>Cette commande permet d'afficher des informations sur le système d'exploitation.</td>
