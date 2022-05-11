@@ -37,6 +37,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet d'afficher le contenu d'un/des fichiers. Cette commande est un équivalent de UNIX.</td>
 		</tr>
 		<tr>
+			<td><b>CHMOD.PAS</b></td>
+			<td>Cette commande permet de changer le mode des fichiers. Cette commande est inspiré de UNIX et Linux.</td>
+		</tr>
+		<tr>
 			<td><b>CLEAR.PAS</b></td>
 			<td>Cette commande permet d'effacer l'écran. Cette commande est inspiré UNIX.</td>
 		</tr>
