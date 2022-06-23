@@ -114,7 +114,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 		</tr>
 		<tr>
 			<td><b>LOGNAME.PAS</b></td>
-			<td>Cette comamnde permet de demander le nom de connexion.</td>
+			<td>Cette commande permet de demander le nom de connexion.</td>
 		</tr>
 		<tr>
 			<td><b>LP.PAS</b></td>
