@@ -170,7 +170,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
     		</tr>
 		<tr>
 			<td><b>TRUE.PAS</b></td>
-			<td>Cette commande permet de retourner vrai. Cette command est inspiré de UNIX et Linux.</td>
+			<td>Cette commande permet de retourner vrai. Cette commande est inspiré de UNIX et Linux.</td>
 		</tr>	
 		<tr>
 			<td><b>UNAME.PAS</b></td>
