@@ -50,7 +50,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 		</tr>
 		<tr>
 			<td><b>CPP.PAS</b></td>
-			<td>Cette commande permet d'effectuer un traitement de préprocesseur de langage de porgrammation <a href="https://www.gladir.com/CODER/C/intro.htm">C</a>.</td>
+			<td>Cette commande permet d'effectuer un traitement de préprocesseur de langage de programmation <a href="https://www.gladir.com/CODER/C/intro.htm">C</a>.</td>
 		</tr>
 		<tr>
 			<td><b>CSH.PAS</b></td>
@@ -101,7 +101,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet d'afficher le début d'un fichier texte. Cette commande est un équivalent de UNIX ou Linux.</td>
 		</tr>
 		<tr>
-			<td><b>HYPHEN.PAS</>
+			<td><b>HYPHEN.PAS</b></td>
 			<td>Cette commande permet de rechercher les mots avec des traits-union. Cette commande est inspiré de la commande UNIX.</td>
 		</tr>
 		<tr>
@@ -114,7 +114,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 		</tr>
 		<tr>
 			<td><b>LOGNAME.PAS</b></td>
-			<td>Cette comamnde permet de demander le nom de connexion.</td>
+			<td>Cette commande permet de demander le nom de connexion.</td>
 		</tr>
 		<tr>
 			<td><b>LP.PAS</b></td>
@@ -170,7 +170,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
     		</tr>
 		<tr>
 			<td><b>TRUE.PAS</b></td>
-			<td>Cette commande permet de retourner vrai. Cette command est inspiré de UNIX et Linux.</td>
+			<td>Cette commande permet de retourner vrai. Cette commande est inspiré de UNIX et Linux.</td>
 		</tr>	
 		<tr>
 			<td><b>UNAME.PAS</b></td>
