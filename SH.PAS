@@ -9,11 +9,11 @@ Program SH;
 Uses Crt,DOS;
 
 Const
- CommandList:Array[0..80]of String[16]=(
+ CommandList:Array[0..81]of String[16]=(
   'alias','bind','break','builtin','caller','cat','cd','chdir','chmod',
   'chown','cmp','command','continue','cp','doscp','date','declare','df',
   'du','echo','enable','env','eval','exec','exit','export','file','find',
-  'getops','hash','head','help','id','kill','let','ln','ll','local',
+  'getops','hash','head','help','history','id','kill','let','ln','ll','local',
   'logout','ls','mail','mapfile','mkdir','more','mv','news','nm','od',
   'pr','printf','ps','pwd','read','readarray','readonly','return','rm',
   'rmdir','shift','size','source','split','stty','tail','tee','test',
@@ -21,14 +21,19 @@ Const
   'unalias','unset','wc','whereis','who','write'
  );
 
+ MaxHistory=100;
+
 Type
  DeleteOption=Set Of (Question,Verbose);
+ StrPointer=^String;
 
 Var
  CommandFound,Terminated:Boolean;
  CmdStr:String;
  CurrCommand,ParamList:String;
  I,J:Byte;
+ History:Array[1..MaxHistory] of StrPointer;
+ NumberHistory:Integer;
 
 Function TrimL(S:String):String;
 Var
@@ -66,6 +71,30 @@ Var
 Begin
  For I:=1 to Length(Str)do Begin
   If Str[I]=OldChar Then Str[I]:=NewChar;
+ End;
+End;
+
+Function AddHistory(S:String):Boolean;
+Var
+ I:Word;
+ P:StrPointer;
+Begin
+ If NumberHistory>=MaxHistory Then Begin
+  FreeMem(History[1],Length(History[1]^)+1);
+  For I:=1 to MaxHistory-1 do History[I]:=History[I+1];
+  GetMem(P,Length(S)+1);
+  P^:=S;
+  History[MaxHistory]:=P;
+  AddHistory:=True;
+  Exit;
+ End
+  Else
+ Begin
+  Inc(NumberHistory);
+  GetMem(P,Length(S)+1);
+  P^:=S;
+  History[NumberHistory]:=P;
+  AddHistory:=True;
  End;
 End;
 
@@ -159,7 +188,7 @@ Begin
  Splitfilename:=N+E;
 End;
 
-Function CopyFile(Source,Target:String):Boolean;
+Function CopyFile(Source,Target:String;ShowProgression:Boolean):Boolean;
 Var
  SourceFile,TargetFile:File;
  RecordsRead:Integer;
@@ -174,17 +203,19 @@ Begin
  End;
  Assign(TargetFile,Target);
  {$I-}Rewrite(TargetFile,1);
+ If(ShowProgression)Then WriteLn('. = 1000 octets de copies');
  BlockRead(SourceFile,Buffer,SizeOf(Buffer),RecordsRead);
  While RecordsRead>0 do Begin
+  If(ShowProgression)Then Write('.');
   BlockWrite(TargetFile,Buffer,RecordsRead);
   BlockRead(SourceFile,Buffer,SizeOf(Buffer),RecordsRead);
  End;
+ If(ShowProgression)Then WriteLn;
  Close(SourceFile);
  Close(TargetFile);
  {$I+}
  CopyFile:=True;
 End;
-
 
 Function MoveFile(Source,Target:String):Boolean;
 Var
@@ -198,7 +229,7 @@ Begin
  Target:=FExpand(Target);
  If(Source[1]<>Target[1])and(Source[2]=':')Then Begin { Unite de disque different ?}
    { Copie le fichier }
-  MoveFile:=CopyFile(Source,Target);
+  MoveFile:=CopyFile(Source,Target,False);
    { Supprime le fichier }
   {$I-}Assign(F,Source);
   Erase(F);
@@ -368,8 +399,58 @@ Procedure ContinueCommand;Begin
  WriteLn('Cette commande n''est pas mise en oeuvre');
 End;
 
-Procedure CpCommand;Begin
- WriteLn('Cette commande n''est pas mise en oeuvre');
+Procedure CpCommand;
+Var
+ P:Byte;
+ ShowVerbose:Boolean;
+ F:File;
+ CurrParam,Source,Target:String;
+Begin
+ P:=0;
+ ShowVerbose:=False;
+ Source:='';
+ Target:='';
+ Repeat
+  Inc(P);
+  CurrParam:=ExtractParam(P);
+  If CurrParam=''Then Begin
+   If P=1Then Begin
+    WriteLn('Paramätre requis');
+   End;
+   Break;
+  End
+   Else
+  If(CurrParam='-h')or(CurrParam='--help')Then Begin
+   WriteLn('cp   Cette commande permet d''effacer la copie de fichier vers un autre emplacement.');
+   WriteLn;
+   WriteLn('Syntaxe:');
+   WriteLn;
+   WriteLn('cp [-h] [-v] source destination');
+   WriteLn;
+   WriteLn('    -h       Ce parametre permet d''afficher l''aide sur cette commande');
+   WriteLn('    -v       Ce parametre permet d''afficher les details');
+   WriteLn('source       Ce parametre permet d''indiquer le fichier source');
+   WriteLn('destination  Ce parametre permet d''indiquer le fichier destination');
+   Exit;
+  End
+   Else
+  If(CurrParam='-v')Then ShowVerbose:=True
+   Else
+  If CurrParam<>''Then
+  Begin
+   If Source=''Then Source:=CurrParam
+               Else Target:=CurrParam;
+  End;
+  If P>9Then Break;
+ Until CurrParam='';
+ If(Source='')or(Target='')Then Begin
+  WriteLn('La source et la destination sont requises');
+ End
+  Else
+ Begin
+  If CopyFile(Source,Target,ShowVerbose)Then WriteLn('1 fichier copie')
+                                        Else WriteLn('Echec de copie de fichier');
+ End;
 End;
 
 Procedure DoscpCommand;Begin
@@ -401,8 +482,39 @@ Procedure DeclareCommand;Begin
  WriteLn('Cette commande n''est pas mise en oeuvre');
 End;
 
-Procedure DfCommand;Begin
- WriteLn('Cette commande n''est pas mise en oeuvre');
+Procedure DfCommand;
+Var
+ I:Char;
+ Dsk:Byte;
+Begin
+ If(ExtractParam(1)='--help')or(ExtractParam(1)='-h')Then Begin
+  WriteLn('df : Cette commande permet d''afficher l''espace libre sur les systemes de fichiers.');
+  WriteLn;
+  WriteLn('Syntaxe : df');
+ End
+  Else
+ Begin
+  WriteLn('Sys. fich.       Taille Util. Dispo Uti%');
+  For I:='A' to 'Z' do Begin
+   Dsk:=Ord(I)-Ord('A');
+   If DiskSize(Dsk+1)<>-1Then Begin
+    Write(I,':',' ':10);
+    If DiskSize(Dsk+1)>1073741824Then Write(DiskSize(Dsk+1) shr 30:9,'G')Else
+    If DiskSize(Dsk+1)>1048576Then Write(DiskSize(Dsk+1) shr 20:9,'M') Else
+    If DiskSize(Dsk+1)>1024Then Write(DiskSize(Dsk+1) shr 10:9,'K')
+                Else Write(DiskSize(Dsk+1):10);
+    If(DiskSize(Dsk+1)-DiskFree(Dsk+1)>1073741824)Then Write((DiskSize(Dsk+1)-DiskFree(Dsk+1)) shr 30:5,'G') Else
+    If(DiskSize(Dsk+1)-DiskFree(Dsk+1)>1048576)Then Write((DiskSize(Dsk+1)-DiskFree(Dsk+1))shr 20:5,'M')
+                Else Write((DiskSize(Dsk+1)-DiskFree(Dsk+1)) shr 10:5,'K');
+    If DiskFree(Dsk+1)>1073741824Then Write(DiskFree(Dsk+1) shr 30:5,'G')Else
+    If DiskFree(Dsk+1)>1048576Then Write(DiskFree(Dsk+1) shr 20:5,'M') Else
+    If DiskFree(Dsk+1)>1024Then Write(DiskFree(Dsk+1) shr 10:5,'K')
+                Else Write(DiskFree(Dsk+1):10);
+    Write(Trunc(((DiskSize(Dsk+1)-DiskFree(Dsk+1))/DiskSize(Dsk+1))*100):5,'%');
+    WriteLn;
+   End;
+  End;
+ End;
 End;
 
 Procedure DuCommand;Begin
@@ -548,6 +660,25 @@ Var
  I:Byte;
 Begin
  For I:=Low(CommandList) to High(CommandList) do Write(PadRight(CommandList[I],16));
+End;
+
+Procedure HistoryCommand;
+Var
+ I:Integer;
+ FirstParam:String;
+Begin
+ FirstParam:=ExtractParam(1);
+ If(FirstParam='-?')or((FirstParam='-h'))Then Begin
+  WriteLn('history   Cette commande permet d''afficher l''historique des commandes.');
+  WriteLn;
+  WriteLn('Syntaxe:');
+  WriteLn;
+  WriteLn('history [-h]');
+  WriteLn;
+  WriteLn('  -h    Ce parametre permet d''afficher l''aide sur cette commande');
+ End
+  Else
+ For I:=1 to NumberHistory do WriteLn(History[I]^);
 End;
 
 Procedure IdCommand;Begin
@@ -1100,106 +1231,158 @@ Procedure UnknownCommand;Begin
  WriteLn;
 End;
 
-BEGIN
- Terminated:=False;
- HomeMessage;
+Procedure ReadLine(Var S:String);
+Var
+ K:Char;
+ X,Y:Byte;
+ CurrHistory:Integer;
+Begin
+ CurrHistory:=NumberHistory;
+ X:=WhereX;
+ Y:=WhereY;
+ S:='';
  Repeat
-  ShowPrompt;
-  ReadLn(CmdStr);
-  ExtractCommand;
-  CommandFound:=False;
-  For J:=Low(CommandList) to High(CommandList) do Begin
-   If CurrCommand=CommandList[J]Then Begin
-    Case(J)of
-     0:AliasCommand;
-     1:BindCommand;
-     2:BreakCommand;
-     3:BuiltinCommand;
-     4:CallerCommand;
-     5:CatCommand;
-     6:CdCommand;
-     7:CdCommand;
-     8:ChmodCommand;
-     9:ChownCommand;
-     10:CmpCommand;
-     11:CommandCommand;
-     12:ContinueCommand;
-     13:CpCommand;
-     14:DoscpCommand;
-     15:DateCommand;
-     16:DeclareCommand;
-     17:DfCommand;
-     18:DuCommand;
-     19:EchoCommand;
-     20:EnableCommand;
-     21:EnvCommand;
-     22:EvalCommand;
-     23:ExecCommand;
-     24:ExitCommand;
-     25:ExportCommand;
-     26:FileCommand;
-     27:FindCommand;
-     28:GetopsCommand;
-     29:HashCommand;
-     30:HeadCommand;
-     31:HelpCommand;
-     32:IdCommand;
-     33:KillCommand;
-     34:LetCommand;
-     35:LnCommand;
-     36:LlCommand;
-     37:LocalCommand;
-     38:LogoutCommand;
-     39:LsCommand;
-     40:MailCommand;
-     41:MapfileCommand;
-     42:MkdirCommand;
-     43:MoreCommand;
-     44:MvCommand;
-     45:NewsCommand;
-     46:NmCommand;
-     47:OdCommand;
-     48:PrCommand;
-     49:PrintfCommand;
-     50:PsCommand;
-     51:PwdCommand;
-     52:ReadCommand;
-     53:ReadarrayCommand;
-     54:ReadonlyCommand;
-     55:ReturnCommand;
-     56:RmCommand;
-     57:RmdirCommand;
-     58:ShiftCommand;
-     59:SizeCommand;
-     60:SourceCommand;
-     61:SplitCommand;
-     62:SttyCommand;
-     63:TailCommand;
-     64:TeeCommand;
-     65:TestCommand;
-     66:TimesCommand;
-     67:TrCommand;
-     68:TrapCommand;
-     69:TsetCommand;
-     70:TtyCommand;
-     71:TypeCommand;
-     72:TypesetCommand;
-     73:UlimitCommand;
-     74:UmaskCommand;
-     75:UnaliasCommand;
-     76:UnsetCommand;
-     77:WcCommand;
-     78:WhereisCommand;
-     79:WhoCommand;
-     80:WriteCommand;
+  GotoXY(X,Y);
+  Write(S);
+  ClrEol;
+  K:=ReadKey;
+  Case K of
+   #0:Case ReadKey of
+    #72:Begin
+     S:=History[CurrHistory]^; { Up }
+     If CurrHistory>1 Then Dec(CurrHistory);
     End;
-    If J<=High(CommandList)Then Begin
-     CommandFound:=True;
-     WriteLn;
-     Break;
+    #80:Begin
+     S:=History[CurrHistory]^; { Down }
+     If CurrHistory<NumberHistory Then Inc(CurrHistory);
     End;
    End;
+   #8:Begin
+    If S<>''Then S:=Copy(S,1,Length(S)-1);
+   End;
+   Else S:=S+K;
   End;
-  If Not(CommandFound)Then UnknownCommand;
- Until Terminated;
+  If S[Length(S)]=#13Then Begin
+   S:=Copy(S,1,Length(S)-1);
+   K:=#13;
+  End;
+ Until K=#13;
+ GotoXY(X,Y);
+ WriteLn(S);
+End;
+
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')Then Begin
+  WriteLn('SH : Cette commande permet de lancer l''interpreteur de commande standard UNIX.');
+  WriteLn;
+  WriteLn('Syntaxe : SH');
+ End
+  Else
+ Begin
+  FillChar(History,SizeOf(History),0);
+  NumberHistory:=0;
+  Terminated:=False;
+  HomeMessage;
+  Repeat
+   ShowPrompt;
+   ReadLine(CmdStr);
+   AddHistory(CmdStr);
+   ExtractCommand;
+   CommandFound:=False;
+   For J:=Low(CommandList) to High(CommandList) do Begin
+    If CurrCommand=CommandList[J]Then Begin
+     Case(J)of
+      0:AliasCommand;
+      1:BindCommand;
+      2:BreakCommand;
+      3:BuiltinCommand;
+      4:CallerCommand;
+      5:CatCommand;
+      6:CdCommand;
+      7:CdCommand;
+      8:ChmodCommand;
+      9:ChownCommand;
+      10:CmpCommand;
+      11:CommandCommand;
+      12:ContinueCommand;
+      13:CpCommand;
+      14:DoscpCommand;
+      15:DateCommand;
+      16:DeclareCommand;
+      17:DfCommand;
+      18:DuCommand;
+      19:EchoCommand;
+      20:EnableCommand;
+      21:EnvCommand;
+      22:EvalCommand;
+      23:ExecCommand;
+      24:ExitCommand;
+      25:ExportCommand;
+      26:FileCommand;
+      27:FindCommand;
+      28:GetopsCommand;
+      29:HashCommand;
+      30:HeadCommand;
+      31:HelpCommand;
+      32:HistoryCommand;
+      33:IdCommand;
+      34:KillCommand;
+      35:LetCommand;
+      36:LnCommand;
+      37:LlCommand;
+      38:LocalCommand;
+      39:LogoutCommand;
+      40:LsCommand;
+      41:MailCommand;
+      42:MapfileCommand;
+      43:MkdirCommand;
+      44:MoreCommand;
+      45:MvCommand;
+      46:NewsCommand;
+      47:NmCommand;
+      48:OdCommand;
+      49:PrCommand;
+      50:PrintfCommand;
+      51:PsCommand;
+      52:PwdCommand;
+      53:ReadCommand;
+      54:ReadarrayCommand;
+      55:ReadonlyCommand;
+      56:ReturnCommand;
+      57:RmCommand;
+      58:RmdirCommand;
+      59:ShiftCommand;
+      60:SizeCommand;
+      61:SourceCommand;
+      62:SplitCommand;
+      63:SttyCommand;
+      64:TailCommand;
+      65:TeeCommand;
+      66:TestCommand;
+      67:TimesCommand;
+      68:TrCommand;
+      69:TrapCommand;
+      70:TsetCommand;
+      71:TtyCommand;
+      72:TypeCommand;
+      73:TypesetCommand;
+      74:UlimitCommand;
+      75:UmaskCommand;
+      76:UnaliasCommand;
+      77:UnsetCommand;
+      78:WcCommand;
+      79:WhereisCommand;
+      80:WhoCommand;
+      81:WriteCommand;
+     End;
+     If J<=High(CommandList)Then Begin
+      CommandFound:=True;
+      WriteLn;
+      Break;
+     End;
+    End;
+   End;
+   If Not(CommandFound)Then UnknownCommand;
+  Until Terminated;
+ End;
 END.
