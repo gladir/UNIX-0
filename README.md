@@ -74,7 +74,7 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 		</tr>
 		<tr>
 			<td><b>DOSDIR.PAS</b></td>
-			<td>Cette commande permet d'afficher la liste des fichiers d''une image disque de FAT. Cette commande est originaire de la commande dosdir de UNIX.</td>
+			<td>Cette commande permet d'afficher la liste des fichiers d'une image disque de FAT. Cette commande est originaire de la commande dosdir de UNIX.</td>
 		</tr>
 		<tr>
 			<td><b>ECHO.PAS</b></td>
