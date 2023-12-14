@@ -132,6 +132,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td><b>MV.PAS</b></td>
 			<td>Cette commande permet de déplacer un fichier.</td>
 		</tr>
+	<tr>
+			<td><b>NL.PAS</b></td>
+			<td>Cette commande permet d'afficher du texte avec des numéros de ligne. </td>
+		</tr>
   	<tr>
 			<td><b>OD.PAS</b></td>
 			<td>Cette commande permet d'afficher le contenu d'un fichier selon un format spécifique. Cette commande est un équivalent de UNIX.</td>
