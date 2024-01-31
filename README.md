@@ -173,6 +173,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet d'afficher des informations sur des fichiers.</td>
 		</tr>	
 		<tr>
+			<td><b>SUM.PAS</b></td>
+			<td>Cette commande permet d'afficher la sommation de chaque fichier.</td>
+		</tr>	
+		<tr>
 			<td><b>TAIL.PAS</b>
 			<td>Cette commande permet d'afficher la fin d'un fichier texte.</td>
 		</tr>
