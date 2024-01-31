@@ -57,9 +57,17 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet de lancer un interpréteur de commande C Shell.</td>
 		</tr>
 		<tr>
+			<td><b>CSPLIT.PAS</b></td>
+			<td>Cette commande permet de séparer un fichier en plusieurs sections déterminé par des lignes de contextes.</td>
+		</tr>			
+		<tr>
 			<td><b>CUT.PAS</b></td>
 			<td>Cette commande permet de supprimer des sections de chaque ligne des fichiers.</td>
 		</tr>
+		<tr>
+			<td><b>DD.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier tant qu'il se copie.</td>
+		</tr>		
 		<tr>
 			<td><b>DF.PAS</b></td>
 			<td>Cette commande permet d'afficher l'espace libre sur le système de fichiers.</td>
