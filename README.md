@@ -189,6 +189,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 			<td>Cette commande permet de changer la date et l'heure d'un fichier.</td>
     		</tr>
 		<tr>
+			<td><b>TR.PAS</b></td>
+			<td>Cette commande permet d'envoyer le contenu de l'entrée standard vers la sortie standard en effectuant le traitement spécifié.</td>
+		</tr>
+		<tr>
 			<td><b>TRUE.PAS</b></td>
 			<td>Cette commande permet de retourner vrai. Cette commande est inspiré de UNIX et Linux.</td>
 		</tr>	
