@@ -1,5 +1,5 @@
 # UNIX-0
-Clone UNIX en Pascal
+Clone UNIX en Pascal (Turbo Pascal ou Free Pascal)
 
 ![image](https://user-images.githubusercontent.com/11842176/146283988-ee2cf8de-9aca-4086-b4c9-cf443b7de91c.png)
 
@@ -35,6 +35,10 @@ Voici la liste des différents fichiers proposés dans UNIX-0 :
 	        <tr>
 			<td><b>CAT.PAS</b></td>
 			<td>Cette commande permet d'afficher le contenu d'un/des fichiers. Cette commande est un équivalent de UNIX.</td>
+		</tr>
+		<tr>
+			<td><b>CB.PAS</b></td>
+			<td>Cette commande permet de rendre lisible le formatage d'un fichier de format C.</td>
 		</tr>
 		<tr>
 			<td><b>CHMOD.PAS</b></td>
