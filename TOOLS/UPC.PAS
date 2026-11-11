@@ -142,6 +142,7 @@ Uses Dos;
 Const
  MaxSource = 1048576;
  MaxImage = 65520;
+ RtlKeys = 106;         { cles des routines du runtime (compaction) }
  MaxSymbols = 8192;
  MaxFixups = 32768;
  MaxSegs = 32;           { segments de code au plus (mode multi-segments) }
@@ -1386,7 +1387,7 @@ const PrinterSource: array[1..10] of string[255] = (
  ' If IOResult<>0 Then ;',
  'End.');
 { --- debut UnixSource (genere par MKEMBED) --- }
-const UnixSource: array[1..1689] of string[255] = (
+const UnixSource: array[1..1700] of string[255] = (
  '{ @author: Sylvain Maltais (support@gladir.com)',
  '  @created: 2026',
  '  @website(https://www.gladir.com/unix-0)',
@@ -2888,14 +2889,20 @@ const UnixSource: array[1..1689] of string[255] = (
  '  $2F: Begin RES:=DtaSeg; RBX:=DtaOfs End;',
  '  $25: ; { vecteurs geres par le noyau : sans effet }',
  '  $35: Begin RBX:=MemW[0:AL*4]; RES:=MemW[0:AL*4+2] End;',
- '  $2A: Begin DateOf(Y,M,D,W,H,Mi,Se); RCX:=Y; RDX:=M*256+D;',
- '         RAX:=(RAX And $FF00) Or W End;',
- '  $2C: Begin DateOf(Y,M,D,W,H,Mi,Se); RCX:=H*256+Mi; RDX:=Se*256 End;',
+ '  { Linked(...) : le service n''est lie que si le programme utilise une des',
+ '    routines nommees (sinon il ne peut pas etre demande) }',
+ '  $2A: If Linked(''DOS.GETDATE,DOS.INTR,DOS.MSDOS'') Then Begin',
+ '         DateOf(Y,M,D,W,H,Mi,Se); RCX:=Y; RDX:=M*256+D;',
+ '         RAX:=(RAX And $FF00) Or W End Else SetCarry(1);',
+ '  $2C: If Linked(''DOS.GETTIME,DOS.INTR,DOS.MSDOS,SYSTEM.RANDOMIZE'') Then Begin',
+ '         DateOf(Y,M,D,W,H,Mi,Se); RCX:=H*256+Mi; RDX:=Se*256 End',
+ '       Else SetCarry(1);',
  '  $2B,$2D: RAX:=RAX And $FF00;',
  '  $2E,$54: RAX:=RAX And $FF00;',
  '  $30: Begin RAX:=$0005; RBX:=$FF00; RCX:=0 End; { version 5.0 }',
  '  $33: RDX:=RDX And $FF00;',
- '  $36: DosDiskFree;',
+ '  $36: If Linked(''DOS.DISKFREE,DOS.DISKSIZE,DOS.INTR,DOS.MSDOS'') Then',
+ '         DosDiskFree Else SetCarry(1);',
  '  $39: If SysMkdir(UnixPath(FarString(RDS,RDX)),$1ED)<0 Then Fail;',
  '  $3A: If SysRmdir(UnixPath(FarString(RDS,RDX)))<0 Then Fail;',
  '  $3B: If SysChdir(UnixPath(FarString(RDS,RDX)))<0 Then SetCarry(3);',
@@ -2968,21 +2975,24 @@ const UnixSource: array[1..1689] of string[255] = (
  '  $48: DosAlloc;',
  '  $49: DosFree;',
  '  $4A: DosResize;',
- '  $4B: If AL=0 Then DosExec Else SetCarry(1);',
+ '  $4B: If Linked(''DOS.EXEC,DOS.INTR,DOS.MSDOS'') Then Begin',
+ '         If AL=0 Then DosExec Else SetCarry(1) End Else SetCarry(1);',
  '  $4C: SysExit(AL);',
  '  $4D: Begin RAX:=LastExit; LastExit:=0 End;',
- '  $4E: DosFindFirst;',
- '  $4F: DosFindNext;',
+ '  $4E: If Linked(''DOS.FINDFIRST,DOS.INTR,DOS.MSDOS'') Then DosFindFirst',
+ '       Else SetCarry(1);',
+ '  $4F: If Linked(''DOS.FINDNEXT,DOS.INTR,DOS.MSDOS'') Then DosFindNext',
+ '       Else SetCarry(1);',
  '  $50: ;',
  '  $51,$62: RBX:=PrefixSeg;',
  '  $56: If SysRename(UnixPath(FarString(RDS,RDX)),',
  '          UnixPath(FarString(RES,RDI)))<0 Then Fail;',
- '  $57: Begin',
- '        If AL=0 Then Begin',
+ '  $57: If AL=0 Then Begin',
+ '        If Linked(''DOS.GETFTIME,DOS.INTR,DOS.MSDOS'') Then Begin',
  '         If SysFStat(RBX,St)<0 Then Fail Else Begin',
  '          L:=DosTime(St.MTime); RCX:=Word(L); RDX:=Word(L Shr 16);',
  '         End;',
- '        End;',
+ '        End Else SetCarry(1);',
  '       End;',
  '  $59: Begin RAX:=0; RBX:=0; RCX:=0 End;',
  '  $5A: Begin',
@@ -3073,8 +3083,10 @@ const UnixSource: array[1..1689] of string[255] = (
  '   la trampoline des gestionnaires de signaux }',
  ' SetRegs(SYS_setdos,Ofs(DosEntry),Seg(DosEntry),0);',
  ' DoSys;',
- ' SetRegs(SYS_sigtramp,Ofs(SigTrampoline),Seg(SigTrampoline),0);',
- ' DoSys;',
+ ' If Linked(''UNIX.SYSSIGNAL'') Then Begin',
+ '  SetRegs(SYS_sigtramp,Ofs(SigTrampoline),Seg(SigTrampoline),0);',
+ '  DoSys;',
+ ' End;',
  'End.');
 { --- fin UnixSource --- }
 const DosSource: array[1..506] of string[255] = (
@@ -5628,6 +5640,15 @@ Var
  OrdAt: Array[0..MaxImage-1] Of Word;
  RuntimeDepth: Word;
  JumpOverflow: Boolean;
+ { Compaction du runtime (taille) : le runtime est emis en entier puis les
+   routines que le programme n'atteint pas (d'apres la passe precedente) sont
+   retirees avant le code du programme. Une routine est reperee par sa cle
+   (1..96 : RuntimeStandard, 97.. : RuntimeChar, RuntimeString, ...). }
+ RtlEnable, RtlTrimNow, RtlMissing: Boolean;
+ RtlWant, RtlUsed: Array[0..RtlKeys] Of Boolean;
+ RtlLo, RtlHi, RtlChunks: Word; RtlSafeCounts: Longint;
+ RtlCStart, RtlCEnd: Array[1..RtlKeys] Of Word;
+ RtlCKey: Array[1..RtlKeys] Of Byte;
  { Edition de liens intelligente (comme TP) : graphe d'appels des routines,
    passe
    d'analyse tolerant le debordement du segment de code, puis recompilation
@@ -5693,6 +5714,16 @@ Var
  CurProc: Word;
  EdgeFrom, EdgeTo: Array[1..32768] Of Word;
  EdgeCount: Word;
+ { Liens conditionnels : "If Linked('UNITE.ROUTINE,...') Then S" ne garde ce
+   que S appelle que si une des routines nommees est atteinte par ailleurs
+   (passe d'analyse : aretes marquees par la garde; passes suivantes : la
+   condition devient une constante et la branche morte est retiree). }
+ EdgeGuard: Array[1..32768] Of Byte;
+ CurGuard, PendingGuard, GuardOrd, GuardCount: Word;
+ GuardNames: Array[1..64] Of String;
+ GuardResult: Array[1..64] Of Boolean;
+ LabelDefs: Word;
+ RandomizeSeen: Boolean;     { Linked('SYSTEM.RANDOMIZE') }
  DeadProc, RootProc: Array[1..MaxSymbols] Of Boolean;
  TotalEmitted: Longint;
  LastJumpTarget: Word;
@@ -5767,6 +5798,20 @@ Var
    table de relocalisation MZ (kind 3), le paragraphe du segment de donnees. }
  DataSegVar: Word;
  CondTail: Word; CondJcc: Byte;
+ CondCmp: Word;  { position du "cmp ax,imm16" de la derniere comparaison }
+ { Conditions de If/While/Until ($B-) : les And/Or du niveau superieur
+   deviennent des sauts. CondF : sauts "faux" en attente, CondT : sauts
+   "vrai" en attente (piles; chaque instruction traite ce qu'elle a ajoute). }
+ CondReq: Boolean;
+ { Exit dans une routine : saut vers l'epilogue final (en attente) }
+ ExitJumps: Array[1..2048] Of Word; ExitJumpCount: Word;
+ { Variable globale : "push ds; pop es; mov di,adresse" (position P) ; si
+   l'acces final suit sans saut, appel ni dereferencement, "push ds; pop es"
+   est retire et l'acces se fait par DS (DsDirect : pas de prefixe ES:) }
+ BvaSnap, DesigSnap: Record P,Rel,Pend,Refs,Nat,Reloc,Lab,Dbg,Ord,Deref: Word End;
+ DesigEnd, DerefCount, DsLastP: Word; DsDirect, StoreViaDs: Boolean;
+ CondF, CondT: Array[1..1024] Of Word;
+ CondFN, CondTN: Word;
    { fin de la derniere sequence booleenne de comparaison }
  PrefixSeg: Word;          { segment du PSP, variable PrefixSeg de System }
  LinkedDataBase: Longint;  { position des donnees dans l'image liee }
@@ -6597,6 +6642,17 @@ Procedure Emit2(A,B: Byte);Begin
  Emit(A); Emit(B)
 End;
 
+Procedure RtlNote(T: Word);
+{ Le programme atteint l'adresse T : si elle est dans le runtime (compacte),
+  la routine qui la contient est utilisee. }
+Var K: Word;
+Begin
+ If (T<RtlLo) Or (T>=RtlHi) Or (RuntimeDepth<>0) Then Exit;
+ For K:=1 To RtlChunks Do
+  If (T>=RtlCStart[K]) And (T<RtlCEnd[K]) Then Begin
+   RtlUsed[RtlCKey[K]]:=True; Exit End;
+End;
+
 Function WantShort(O: Word): Boolean;
 { Saut court autorise pour l'ordinal O ? Pas dans le runtime ecrit a la main. }
 Begin
@@ -6655,6 +6711,7 @@ Var
  I,O: Word; D: Longint;
 Begin
  LastJumpTarget:=Target;
+ If Target<RtlHi Then RtlNote(Target);
  O:=OrdAt[P];
  If (P>0) And ((Image[P-1]=$EB) Or ((Image[P-1]>=$70) And (Image[P-1]<=$7F)))
    Then Begin
@@ -6686,6 +6743,7 @@ Begin
  { saut arriere court : deplacement connu tout de suite }
  If (RuntimeDepth=0) And Not DbgNoBack And Not AfterSkip And (Target<CodeSize)
    And (CodeSize+2-Target<=128) Then Begin
+  If Target<RtlHi Then RtlNote(Target);
   Inc(JumpOrd);
   Emit($EB); Emit(Byte(Longint(Target)-CodeSize-1));
   LastJumpTarget:=Target;
@@ -6786,9 +6844,12 @@ Begin
  End;
 End;
 
-Function JumpZero: Word;
-Var Len: Word; D: Longint; V: Word; Inverted: Boolean;
+Function JumpTest(OnTrue: Boolean): Word;
+{ Saut si AX (booleen) est faux (OnTrue : vrai), en reprenant la
+  comparaison qui vient de le produire. }
+Var Len: Word; D: Longint; V: Word; Inverted: Boolean; X: Byte;
 Begin
+ X:=Ord(OnTrue);
  If (CondTail=CodeSize) And (CodeSize>=7) And (Image[CodeSize-4]>=$70) And
    (Image[CodeSize-4]<=$7F) And (Image[CodeSize-3]=2) And
    (Image[CodeSize-2]=$31) And (Image[CodeSize-1]=$C0) Then Begin
@@ -6799,8 +6860,8 @@ Begin
   CondTail:=0;
   CodeSize:=CodeSize-7;
   { comparaison d'une variable de la frame avec une constante : cmp [bp+d],imm }
-  If (CodeSize>=3) And (Image[CodeSize-3]=$3D) And (LastJumpTarget<CodeSize-3)
-    Then Begin
+  If (CodeSize>=3) And (CondCmp=CodeSize-3) And (Image[CodeSize-3]=$3D) And
+    (LastJumpTarget<CodeSize-3) Then Begin
    V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256;
    Dec(CodeSize,3);
    If (V<=255) And (CondJcc>=$72) And (CondJcc<=$77) And TailLoadByte(Len,
@@ -6813,7 +6874,7 @@ Begin
     Else Begin Emit($81); EmitBP(7,SmallInt(D)); EmitWord(V) End;
    End Else Begin Emit($3D); EmitWord(V) End;
   End;
-  JumpZero:=JumpIf(CondJcc); Exit;
+  JumpTest:=JumpIf(CondJcc Xor X); Exit;
  End;
  Inverted:=False;
  { "not b" : saut sur la condition inverse au lieu de "xor ax,1" }
@@ -6827,8 +6888,42 @@ Begin
   Dec(CodeSize,Len); Emit($83); EmitBP(7,SmallInt(D)); Emit(0);
     { cmp word [bp+d],0 }
  End Else Emit2($09,$C0);    { or ax,ax }
- If Inverted Then JumpZero:=JumpIf($74) Else JumpZero:=JumpIf($75);
+ If Inverted Then JumpTest:=JumpIf($74 Xor X) Else JumpTest:=JumpIf($75 Xor X);
    { 8086 : pas de Jcc near }
+End;
+
+Function JumpZero: Word;
+Begin JumpZero:=JumpTest(False) End;
+
+Procedure CondPush(Var N: Word; OnTrue: Boolean; P: Word);
+Begin
+ If N=1024 Then Fail(124,'Condition trop longue');
+ Inc(N); If OnTrue Then CondT[N]:=P Else CondF[N]:=P;
+End;
+
+Procedure CondPatch(OnTrue: Boolean; Base,Target: Word);
+{ sauts en attente au-dessus de Base vers Target, puis retires }
+Begin
+ If OnTrue Then Begin
+  While CondTN>Base Do Begin PatchJump(CondT[CondTN],Target); Dec(CondTN) End;
+ End Else
+  While CondFN>Base Do Begin PatchJump(CondF[CondFN],Target); Dec(CondFN) End;
+End;
+
+Procedure CondMaterialize(FB,TB: Word);
+{ Valeur d'une condition a sauts en attente : AX = dernier operande si on
+  arrive en sequence, 1 par les sauts "vrai", 0 par les sauts "faux". }
+Var J,J2: Word;
+Begin
+ If (CondFN=FB) And (CondTN=TB) Then Exit;
+ J:=Jump; J2:=0;
+ If CondTN>TB Then Begin
+  CondPatch(True,TB,CodeSize); Emit($B8); EmitWord(1);
+  If CondFN>FB Then J2:=Jump;
+ End;
+ If CondFN>FB Then Begin CondPatch(False,FB,CodeSize); Emit2($31,$C0) End;
+ PatchJump(J,CodeSize); If J2<>0 Then PatchJump(J2,CodeSize);
+ ExprKnown:=False;
 End;
 
 Function RtlTarget(T: Word): Word; Forward;
@@ -6861,6 +6956,12 @@ Var
  Rel: Array[1..64] Of Word; RelCount: Word;
 Begin
  RtlTarget:=T;
+ { routine retiree par la compaction (adresse $FF00+cle) : la passe suivante
+   la garde }
+ If (T>=$FF00) And (T-$FF00<=RtlKeys) Then Begin
+  RtlUsed[T-$FF00]:=True; RtlMissing:=True; RtlTarget:=RtlLo; Exit;
+ End;
+ RtlNote(T);
  If Not KernelMode Then Exit;
  For K:=1 To CloneCount Do If CloneSrc[K]=T Then Begin RtlTarget:=CloneDst[K];
    Exit End;
@@ -7495,16 +7596,22 @@ Begin
 End;
 
 Procedure ScopeAddress(Scope: Word);
-Var S: Word;
+{ BX := frame de la portee Scope : le premier lien statique est lu par
+  [bp+d], les suivants par ss:[bx+d] }
+Var S: Word; First: Boolean;
 Begin
- Emit2($89,$EB); { bx=bp }
- S:=CurrentScope;
+ S:=CurrentScope; First:=True;
  While S<>Scope Do Begin
   If S=0 Then Unsupported('lien statique vers une portee non accessible');
   If Scopes[S].Pseudo Then Begin S:=Scopes[S].Parent; Continue End;
-  Emit($36); Emit2($8B,$9F); EmitWord(Scopes[S].LinkOffset);
-  S:=Scopes[S].Parent;
+  If First Then Begin
+   Emit($8B); EmitBP(3,SmallInt(Scopes[S].LinkOffset));   { mov bx,[bp+d] }
+  End Else If Scopes[S].LinkOffset<=127 Then Begin
+   Emit($36); Emit2($8B,$5F); Emit(Scopes[S].LinkOffset)
+  End Else Begin Emit($36); Emit2($8B,$9F); EmitWord(Scopes[S].LinkOffset) End;
+  First:=False; S:=Scopes[S].Parent;
  End;
+ If First Then Emit2($89,$EB); { bx=bp }
 End;
 
 Procedure AddSegmentRelocation(P: Word; Kind: Byte);Begin
@@ -7519,6 +7626,7 @@ Procedure NoteRef(Sym: Word);
 Begin
  If (Sym=0) Or (EdgeCount=32768) Then Exit;
  Inc(EdgeCount); EdgeFrom[EdgeCount]:=CurProc; EdgeTo[EdgeCount]:=Sym;
+ EdgeGuard[EdgeCount]:=CurGuard;
 End;
 
 Procedure AddPending(P,Sym: Word; Absolute: Boolean; Add: Longint);
@@ -7742,10 +7850,14 @@ Begin
   If Not (Symbols[I].SkipSub And (StackLoops=0)) Then Emit2($89,$EC);
   Emit($5D)
  End;
- If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2);
- { parametres (+ lien statique pour une routine imbriquee) }
- If Symbols[I].Scope<>0 Then EmitWord(Symbols[I].ParamBytes+2) Else
-   EmitWord(Symbols[I].ParamBytes);
+ { parametres (+ lien statique pour une routine imbriquee) ; ret sans
+   operande s'il n'y en a pas }
+ If Symbols[I].Scope<>0 Then V:=Symbols[I].ParamBytes+2 Else
+   V:=Symbols[I].ParamBytes;
+ If V=0 Then Begin If Symbols[I].FarRoutine Then Emit($CB) Else Emit($C3) End
+ Else Begin
+  If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2); EmitWord(V);
+ End;
 End;
 
 Procedure NativeReference(U, Kind: Byte; Map, Target: Word);Begin
@@ -7812,6 +7924,20 @@ Begin
  End;
 End;
 
+Function DsTake(Skip: Word): Boolean; Forward;
+
+Procedure DXAXToESDI;
+{ ES:DI := DX:AX (AX et DX ne servent plus) ; une constante du segment de
+  donnees ("mov ax,adr; mov dx,ds") devient "mov di,adr; push ds; pop es" }
+Begin
+ If (CodeSize>=5) And (Image[CodeSize-5]=$B8) And (Image[CodeSize-2]=$8C) And
+   (Image[CodeSize-1]=$DA) And (LastJumpTarget<=CodeSize-5) And
+   (FixupCount>0) And (Fixups[FixupCount].Position=CodeSize-4) Then Begin
+  Image[CodeSize-5]:=$BF; Image[CodeSize-2]:=$1E; Image[CodeSize-1]:=$07;
+  CondTail:=0;
+ End Else Begin Emit2($89,$C7); Emit2($8E,$C2) End;
+End;
+
 Procedure EmitAddrAXDX;
 { DX:AX := ES:DI ; si le code finit par "lea di,[bp+d]; push ss;
   pop es" : lea ax,[bp+d]; push ss; pop dx }
@@ -7823,6 +7949,10 @@ Begin
   If N=5 Then Image[CodeSize-2]:=Image[CodeSize-2] And $C7 Else
     Image[CodeSize-3]:=Image[CodeSize-3] And $C7;
   Emit($16); Emit($5A);
+ End Else If DsTake(0) Then Begin
+  { variable globale : DX = DS ; "mov di,adr" seul -> "mov ax,adr" }
+  If CodeSize=DsLastP+3 Then Image[DsLastP]:=$B8 Else Emit2($89,$F8);
+  Emit2($8C,$DA);
  End Else Begin Emit2($89,$F8); Emit2($8C,$C2) End;
 End;
 
@@ -7837,7 +7967,8 @@ Begin
   Dec(CodeSize,2); Image[CodeSize]:=0; { retire "push ss; pop es" }
   Move(Image[CodeSize-(N-2)],Image[CodeSize-(N-2)+1],N-2);
   Image[CodeSize-(N-2)]:=$16; Inc(CodeSize); Emit($57);
- End Else Begin Emit($06); Emit($57) End;
+ End Else If DsTake(0) Then Begin Emit($1E); Emit($57) End
+ Else Begin Emit($06); Emit($57) End;
 End;
 
 Procedure RangeBounds(LowBound,HighBound: Longint; SourceType: Word);
@@ -7960,6 +8091,7 @@ End;
 
 Procedure BaseVariableAddress(I: Word);
 Begin
+ BvaSnap.P:=$FFFF;
  If Symbols[I].Kind<>skVar Then Fail(43,'Variable attendue');
  If Symbols[I].IsAbsolute Then Begin
   Emit($B8); EmitWord(Symbols[I].AbsoluteSeg); Emit2($8E,$C0); Emit($BF);
@@ -7975,9 +8107,17 @@ Begin
   Emit($8D); EmitBP(7,SmallInt(Symbols[I].Addr)); Emit($16); Emit($07);
     { lea di,[bp+offset]; push ss; pop es }
  End Else If Symbols[I].Local Then Begin
-  ScopeAddress(Symbols[I].Scope); Emit2($81,$C3); EmitWord(Symbols[I].Addr);
-  Emit2($89,$DF); Emit($16); Emit($07);
+  ScopeAddress(Symbols[I].Scope);
+  If (SmallInt(Symbols[I].Addr)>=-128) And (SmallInt(Symbols[I].Addr)<=127) Then
+   Begin Emit2($8D,$7F); Emit(Byte(Symbols[I].Addr)) End  { lea di,[bx+d8] }
+  Else Begin Emit2($8D,$BF); EmitWord(Symbols[I].Addr) End;
+  Emit($16); Emit($07);
  End Else Begin
+  With BvaSnap Do Begin
+   P:=CodeSize; Rel:=RelativeCount; Pend:=PendCount; Refs:=CodeRefCount;
+   Nat:=NativeRefCount; Reloc:=RelocationCount; Lab:=LabelJumpCount;
+   Dbg:=DebugCount; Ord:=JumpOrd; Deref:=DerefCount;
+  End;
   Emit($1E); Emit($07); Emit($BF); DataAddress(Symbols[I].Addr);
  End;
 End;
@@ -8224,15 +8364,16 @@ Function DesignatorTail(T: Word): Word;
 { Suite d'un designateur (^ . [ ]) a partir de ES:DI et du type T. }
 Var F,IndexType,Element,StartIdx,FixMark,RelMark,PendMark,LeaLen: Word;
   Name: TShortString;
- LocalBase: Boolean; LD: Longint;
+ LocalBase: Boolean; LD,LowD: Longint;
 Begin
  While Token In [tkLB,tkDot,tkCaret] Do Begin
   If Token=tkCaret Then Begin
    If Types[T].Typ<>ttPointer Then Fail(26,'Pointeur attendu');
+   Inc(DerefCount);
    Emit($26); Emit2($C4,$3D); T:=TypeExtras[T].ElementType; NextToken;
   End Else If (Token=tkLB) And IsCharPointer(T) And ExtendedSyntax Then Begin
    { $X+: P[i] designe le caractere a l'offset P+i, sans controle de bornes. }
-   NextToken; Emit($26); Emit2($C4,$3D);
+   NextToken; Inc(DerefCount); Emit($26); Emit2($C4,$3D);
    Emit($06); Emit($57); RequireInteger(Expression); Emit($5F); Emit($07);
    Emit2($01,$C7); T:=6; Need(tkRB);
   End Else If Token=tkDot Then Begin
@@ -8244,7 +8385,7 @@ Begin
     { methode d'objet : Objet.Methode(args) }
     F:=FindAtScope(Types[T].IdentityName+'.'+Name,CurrentUnit,0);
     If (F<>0) And (Symbols[F].Kind=skProc) And Symbols[F].IsMethod Then Begin
-     NextToken; Emit($06); Emit($57); SelfPushed:=True;
+     NextToken; Inc(DerefCount); Emit($06); Emit($57); SelfPushed:=True;
      UserCall(F); MethodCalled:=True; DesignatorTail:=ExprType; Exit;
     End;
     F:=0;
@@ -8313,10 +8454,22 @@ Begin
        ExprType);
     End;
     If (Types[T].Typ=ttArray) And (Types[IndexType].LowBound<>0) Then Begin
-     Emit($2D); EmitWord(Word(Types[IndexType].LowBound));
+     { borne basse : repliee dans le deplacement d'une base locale, sinon
+       dec/inc (1 octet) ou sub ax,imm }
+     LowD:=Types[IndexType].LowBound*Longint(TypeExtras[Element].Size);
+     If LocalBase And (Abs(Types[IndexType].LowBound)<32768) And (LD-LowD>=-32768) And (LD-LowD<=32767) Then LD:=LD-LowD
+     Else Case Types[IndexType].LowBound Of
+      1: Emit($48); 2: Begin Emit($48); Emit($48) End; -1: Emit($40);
+      Else Begin Emit($2D); EmitWord(Word(Types[IndexType].LowBound)) End;
+     End;
     End;
-    If TypeExtras[Element].Size<>1 Then Begin
-     Emit($BB); EmitWord(TypeExtras[Element].Size); Emit2($F7,$E3);
+    Case TypeExtras[Element].Size Of
+     1: ;
+     2: Emit2($D1,$E0);                              { shl ax,1 }
+     4: Begin Emit2($D1,$E0); Emit2($D1,$E0) End;
+     Else Begin
+      Emit($BB); EmitWord(TypeExtras[Element].Size); Emit2($F7,$E3);
+     End;
     End;
     If LocalBase Then Begin
      Emit2($89,$C7);                                            { mov di,ax }
@@ -8336,14 +8489,42 @@ Begin
 End;
 
 Function Designator(I: Word): Word;
+Var S: Record P,Rel,Pend,Refs,Nat,Reloc,Lab,Dbg,Ord,Deref: Word End;
 Begin
- BaseVariableAddress(I); Designator:=DesignatorTail(SymbolType(I));
+ BaseVariableAddress(I); Move(BvaSnap,S,SizeOf(S));
+ Designator:=DesignatorTail(SymbolType(I));
+ Move(S,DesigSnap,SizeOf(S)); DesigEnd:=CodeSize;
+End;
+
+Function DsTake(Skip: Word): Boolean;
+{ Le designateur qui vient d'etre emis (suivi de Skip octets) est une
+  variable globale dont ES n'a servi a rien : retire son "push ds; pop es". }
+Var K: Word;
+Begin
+ DsTake:=False;
+ With DesigSnap Do Begin
+  If (P=$FFFF) Or (CodeSize<>DesigEnd+Skip) Or (CodeSize<P+5) Then Exit;
+  If (Image[P]<>$1E) Or (Image[P+1]<>$07) Or (Image[P+2]<>$BF) Then Exit;
+  If (RelativeCount<>Rel) Or (PendCount<>Pend) Or (CodeRefCount<>Refs) Or
+    (NativeRefCount<>Nat) Or (RelocationCount<>Reloc) Or
+    (LabelJumpCount<>Lab) Or (DebugCount<>Dbg) Or (JumpOrd<>Ord) Or
+    (DerefCount<>Deref) Or (LastJumpTarget>P) Then Exit;
+  Move(Image[P+2],Image[P],CodeSize-P-2);
+  Move(OrdAt[P+2],OrdAt[P],(CodeSize-P-2)*2);
+  Move(CodeOwners[P+2],CodeOwners[P],CodeSize-P-2);
+  For K:=1 To FixupCount Do
+   If Fixups[K].Position>P Then Dec(Fixups[K].Position,2);
+  Dec(CodeSize,2); Dec(DesigEnd,2);
+  If CondCmp>P Then CondCmp:=0;
+  CondTail:=0; DsLastP:=P; P:=$FFFF;
+ End;
+ DsTake:=True;
 End;
 
 Procedure EmitDIMem(Opcode,Reg: Byte; D: Longint);
-{ ES:[DI+D] avec registre Reg. }
+{ ES:[DI+D] (DS:[DI+D] si DsDirect) avec registre Reg. }
 Begin
- Emit($26); Emit(Opcode);
+ If Not DsDirect Then Emit($26); Emit(Opcode);
  If D=0 Then Emit($05 Or (Reg Shl 3))
  Else If (D>=-128) And (D<=127) Then Begin Emit($45 Or (Reg Shl 3));
    Emit(Byte(D)) End
@@ -8392,11 +8573,13 @@ Begin
    If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
   End Else If Types[T].Width=4 Then EmitBPDisp($8B,2,D+2);
  End Else Begin
+  DsDirect:=DsTake(0);
   D:=0; TakeAddDI(0,D);
   If Types[T].Width=1 Then EmitDIMem($8A,0,D) Else EmitDIMem($8B,0,D);
   If Types[T].Width=1 Then Begin
    If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
   End Else If Types[T].Width=4 Then EmitDIMem($8B,2,D+2);
+  DsDirect:=False;
  End;
 End;
 
@@ -8405,6 +8588,7 @@ Procedure StoreDesignatorN(T: Word; Skip: Word);
   Skip = octets du second membre deja emis apres le designateur. }
 Var D: Longint; V: Word;
 Begin
+ DsDirect:=StoreViaDs Or DsTake(Skip); StoreViaDs:=False;
  D:=0; TakeAddDI(Skip,D);
  If (Skip=3) And (CodeSize>=3) And (Image[CodeSize-3]=$B8) And
    (Types[T].Width<=2) And (LastJumpTarget<CodeSize-2) Then Begin
@@ -8412,10 +8596,11 @@ Begin
   V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; Dec(CodeSize,3);
   If Types[T].Width=1 Then Begin EmitDIMem($C6,0,D); Emit(V And 255) End
   Else Begin EmitDIMem($C7,0,D); EmitWord(V) End;
-  Exit;
+ End Else Begin
+  If Types[T].Width=1 Then EmitDIMem($88,0,D) Else EmitDIMem($89,0,D);
+  If Types[T].Width=4 Then EmitDIMem($89,2,D+2);
  End;
- If Types[T].Width=1 Then EmitDIMem($88,0,D) Else EmitDIMem($89,0,D);
- If Types[T].Width=4 Then EmitDIMem($89,2,D+2);
+ DsDirect:=False;
 End;
 
 Procedure StoreDesignator(T: Word);
@@ -8509,7 +8694,7 @@ Begin
   End;
  End
  Else If Token=tkNot Then Begin
-  NextToken; T:=Factor;
+  NextToken; T:=Factor; PendingGuard:=0; { Not Linked(...) : pas de garde }
   ExprKnown:=False; ExprLiteral:=False;
   If T=ttBoolean Then Begin
    Emit2($35,$01); Emit(0)
@@ -8632,6 +8817,24 @@ Begin
      EmitWord(Word(Bound Shr 16)) End;
    T:=Types[CastType].Typ; ExprType:=CastType; ExprKnown:=True;
      ExprValue:=Bound;
+  End Else If (I=0) And (Token<>tkDot) And (Name='LINKED') Then Begin
+   { Linked('UNITE.ROUTINE,...') : vrai si une des routines est liee }
+   Need(tkLP);
+   If (Token<>tkConstant) Or Not TokenIsString Then Fail(106,'');
+   Inc(GuardOrd);
+   If GuardOrd>64 Then Fail(123,'Trop de Linked');
+   If AnalysisPass Then Begin
+    GuardNames[GuardOrd]:=TokenText; GuardCount:=GuardOrd;
+   End;
+   NextToken; Need(tkRP);
+   T:=ttBoolean; ExprType:=5;
+   If AnalysisPass Then Begin
+    ExprKnown:=False; LoadImmediate(1);
+    If Token=tkThen Then PendingGuard:=GuardOrd;
+   End Else Begin
+    ExprKnown:=True; ExprValue:=Ord(GuardResult[GuardOrd]);
+    LoadImmediate(ExprValue);
+   End;
   End Else If (I=0) And (Token<>tkDot) And (Name='ASSIGNED') Then Begin
    Need(tkLP); T:=Expression; Need(tkRP);
    If T<>ttPointer Then Fail(78,'');
@@ -8739,18 +8942,66 @@ Begin
  Factor:=T;
 End;
 
+Function WideConst(PushPos: Word; WideRight, Unsigned: Boolean;
+  Var V: Longint): Boolean;
+{ Comparaison 32 bits, gauche empilee ("push dx; push ax" juste avant
+  PushPos) : si le membre droit n'est qu'une constante ("mov ax,imm" puis,
+  en 32 bits, "cwd", "xor dx,dx" ou "mov dx,imm"), retire les empilements et
+  le chargement (gauche reste dans DX:AX) et rend la valeur. }
+Var N: Word;
+Begin
+ WideConst:=False; N:=CodeSize-PushPos;
+ If (PushPos<2) Or (Image[PushPos-2]<>$52) Or (Image[PushPos-1]<>$50) Or
+   (Image[PushPos]<>$B8) Or (LastJumpTarget>PushPos-2) Or
+   (CondTail=CodeSize) Then Exit;
+ V:=Image[PushPos+1]+Word(Image[PushPos+2])*256;
+ If Not WideRight Then Begin
+  If N<>3 Then Exit;
+  If Not Unsigned Then V:=SmallInt(Word(V));
+ End Else If (N=4) And (Image[PushPos+3]=$99) Then V:=SmallInt(Word(V))
+ Else If (N=5) And (Image[PushPos+3]=$31) And (Image[PushPos+4]=$D2) Then
+ Else If (N=6) And (Image[PushPos+3]=$BA) Then
+  V:=Longint(Word(V)) Or (Longint(Image[PushPos+4]+Word(Image[PushPos+5])*256)
+    Shl 16)
+ Else Exit;
+ CodeSize:=PushPos-2; WideConst:=True;
+End;
+
+Procedure WideImm(OpAX,Ext: Byte; V: Longint);
+{ DX:AX op= V : "op ax,lo" (OpAX = forme AX,imm16) puis "op dx,hi" (groupe
+  81/83, Ext = octet ModRM sur DX) ; or/xor/and neutres omis, add/sub
+  devenus adc/sbb pour la partie haute }
+Var Lo,Hi: Word; Neutral: Boolean;
+Begin
+ Lo:=Word(V); Hi:=Word(V Shr 16);
+ Neutral:=((OpAX=$0D) Or (OpAX=$35)) And (Lo=0) Or (OpAX=$25) And (Lo=$FFFF);
+ If Not Neutral Or (OpAX=$05) Or (OpAX=$2D) Then Begin
+  Emit(OpAX); EmitWord(Lo) End;
+ Neutral:=((Ext=$CA) Or (Ext=$F2)) And (Hi=0) Or (Ext=$E2) And (Hi=$FFFF);
+ If Neutral Then Exit;
+ If (SmallInt(Hi)>=-128) And (SmallInt(Hi)<=127) Then Begin
+  Emit2($83,Ext); Emit(Byte(Hi)) End
+ Else Begin Emit2($81,Ext); EmitWord(Hi) End;
+End;
+
 Function Term: Byte;
 Var
  T, R, Op: Byte; RightKnown,MixedWide: Boolean; RightValue: Longint;
  Skip,ShiftLoop,CV,PushPos,K: Word; ConstOp,MemOp,ConstBx: Boolean; MD: Longint;
- ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
+ ShortCircuit,WideLeft,WideRight,WideResult,WideK,MyCond: Boolean; CL: Longint;
  LeftType: Word; LeftUnsigned: Boolean;
- LeftKnown: Boolean; LeftValue: Longint; Check: Real; S0: Word;
+ LeftKnown: Boolean; LeftValue: Longint; Check: Real; S0,FB: Word;
 Begin
- S0:=CodeSize;
+ S0:=CodeSize; MyCond:=CondReq; CondReq:=False; FB:=CondFN;
  T:=Factor;
  While Token In [tkTimes,tkSlash,tkDiv,tkMod,tkAnd,tkShl,tkShr] Do Begin
   Op:=Token;
+  If MyCond And (Op=tkAnd) And (T=ttBoolean) Then Begin
+   { condition : operande faux -> sortie "faux" }
+   CondPush(CondFN,False,JumpZero); NextToken;
+   T:=Factor; RequireBoolean(T); ExprKnown:=False; ExprType:=5; Continue;
+  End;
+  CondMaterialize(FB,CondTN);
   If T=ttSet Then Begin
    LeftType:=ExprType; If Op<>tkTimes Then Fail(26,'Operation set invalide');
    Emit($52); Emit($50); NextToken; R:=Factor; ExprLiteral:=False;
@@ -8789,19 +9040,27 @@ Begin
   WideRight:=(R=ttInteger) And (Types[ExprType].Width=4);
     WideResult:=WideLeft Or WideRight Or MixedWide;
   If WideResult Then Begin
+   RequireInteger(T); RequireInteger(R);
+   { droite constante : and immediat, sinon CX:BX charge directement }
+   WideK:=WideLeft And WideConst(PushPos,WideRight,ExprUnsigned,CL);
+   If WideK And (Op=tkAnd) Then Begin
+    WideImm($25,$E2,CL);
+   End Else If WideK Then Begin
+    Emit($BB); EmitWord(Word(CL)); Emit($B9); EmitWord(Word(CL Shr 16));
+   End Else Begin
    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,
      $D2) Else Emit($99) End;
    Emit2($89,$C3); Emit2($89,$D1); Emit($58);
    If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,
      $D2) Else Emit($99);
-   RequireInteger(T); RequireInteger(R);
+   End;
    Case Op Of
     tkTimes:CallTo(RtlTarget(RuntimeStandard[14]));
     tkDiv,tkMod:Begin
      CallTo(RtlTarget(RuntimeStandard[15]));
      If Op=tkMod Then Begin Emit2($89,$D8); Emit2($89,$CA) End;
     End;
-    tkAnd:Begin Emit2($21,$D8); Emit2($21,$CA) End;
+    tkAnd:If Not WideK Then Begin Emit2($21,$D8); Emit2($21,$CA) End;
     tkShl,tkShr:Begin
      Emit2($89,$D9); Emit2($80,$E1); Emit(31); Emit2($09,$C9);
        Skip:=JumpIf($75);
@@ -8950,17 +9209,19 @@ Function SimpleExpression: Byte;
 Var
  T,R,Op,Sign: Byte;
  Skip,CV,PushPos: Word; ConstOp,MemOp: Boolean; MD: Longint;
- ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
+ ShortCircuit,WideLeft,WideRight,WideResult,WideK,MyCond: Boolean;
+ CL: Longint; FB,TB: Word;
  LeftType: Word; LeftUnsigned: Boolean;
  LeftKnown: Boolean; LeftValue: Longint; Check: Real;
  StrTemp,LeftArray,RightKnown,MixedWide: Boolean; RightT: Word;
    RightValue: Longint;
 Begin
  Sign:=0; StrTemp:=False;
+ MyCond:=CondReq; CondReq:=False; FB:=CondFN; TB:=CondTN;
  If Token In [tkPlus,tkMinus] Then Begin
   Sign:=Token; NextToken
  End;
- T:=Term;
+ CondReq:=MyCond And (Sign=0); T:=Term; CondReq:=False;
  If Sign<>0 Then ExprLiteral:=False;
  If (Sign<>0) And (T<>ttReal) Then RequireInteger(T);
  If (Sign=tkMinus) And (T=ttReal) Then RealUnary(5)
@@ -8973,6 +9234,14 @@ Begin
  End;
  While Token In [tkPlus,tkMinus,tkOr,tkXor] Do Begin
   Op:=Token;
+  If MyCond And (Sign=0) And (Op=tkOr) And (T=ttBoolean) Then Begin
+   { condition : terme vrai -> sortie "vrai"; ses sorties "faux" menent au
+     terme suivant }
+   CondPush(CondTN,True,JumpTest(True)); CondPatch(False,FB,CodeSize);
+   NextToken; CondReq:=True; T:=Term; CondReq:=False; RequireBoolean(T);
+   ExprKnown:=False; ExprType:=5; Continue;
+  End;
+  CondMaterialize(FB,TB);
   If (T=ttPointer) And IsCharPointer(ExprType) And (Op In [tkPlus,
     tkMinus]) And ExtendedSyntax Then Begin
    { $X+: P+n et P-n agissent sur l'offset seulement; P-Q donne un entier. }
@@ -9073,8 +9342,18 @@ Begin
   End;
   WideRight:=(R=ttInteger) And (Types[ExprType].Width=4);
     WideResult:=WideLeft Or WideRight Or MixedWide;
-  ConstOp:=False; MemOp:=False;
-  If WideResult Then Begin
+  ConstOp:=False; MemOp:=False; WideK:=False;
+  If WideResult And WideLeft And (T=ttInteger) And (R=ttInteger) And
+    WideConst(PushPos,WideRight,ExprUnsigned,CL) Then Begin
+   { droite constante : operations immediates sur DX:AX }
+   WideK:=True;
+   Case Op Of
+    tkPlus: WideImm($05,$D2,CL);
+    tkMinus: WideImm($2D,$DA,CL);
+    tkOr: WideImm($0D,$CA,CL);
+    Else WideImm($35,$F2,CL);
+   End;
+  End Else If WideResult Then Begin
    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,
      $D2) Else Emit($99) End;
    Emit2($89,$C3); Emit2($89,$D1); Emit($58);
@@ -9086,7 +9365,8 @@ Begin
      (Types[ExprType].Width=2) And RightLocalWord(PushPos,MD);
    If Not ConstOp And Not MemOp Then Begin Emit2($89,$C3); Emit($58) End;
   End;
-  If Op In [tkOr,tkXor] Then Begin
+  If WideK Then
+  Else If Op In [tkOr,tkXor] Then Begin
    If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,
      'Types incompatibles');
    If ConstOp Then Begin If Op=tkOr Then Emit($0D) Else Emit($35);
@@ -9137,10 +9417,14 @@ End;
 
 Function Expression: Byte;
 Var T,R,Op,Jcc,HighJcc: Byte; LeftType: Word; LeftUnsigned,WideLeft,WideRight,
-  Wide: Boolean;
- P,Q,H,CV,PushPos: Word; MD: Longint;
+  Wide,Known: Boolean;
+ P,Q,H,CV,PushPos,FB,TB: Word; MD,CL: Longint;
 Begin
+ FB:=CondFN; TB:=CondTN;
  T:=SimpleExpression;
+ { condition suivie d'une relation : il faut sa valeur }
+ If Token In [tkIn,tkEqual,tkNE,tkGreater,tkLess,tkGE,tkLE] Then
+   CondMaterialize(FB,TB);
  If Token=tkIn Then Begin
   LeftType:=ExprType;
   If Not (T In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(27,
@@ -9184,7 +9468,7 @@ Begin
    { Tableau de Char compare a une chaine (meme longueur) ou a un autre tableau.
      }
    If R=ttChar Then StringFromChar;
-   Emit2($89,$C7); Emit2($8E,$C2);
+   DXAXToESDI;
      { es:di = droite }
    If R<>ttArray Then Begin Emit($26); Emit2($8A,$1D); Emit($47) End;
      { bl = longueur; di++ }
@@ -9244,7 +9528,7 @@ Begin
    ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=ttBoolean;
      Exit;
   End Else If T=ttString Then Begin
-   Emit2($89,$C7); Emit2($8E,$C2); Emit($5E); Emit($5A);
+   DXAXToESDI; Emit($5E); Emit($5A);
    Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[13])); Emit($1F);
      Emit2($09,$C0);
   End Else If T=ttPointer Then Begin
@@ -9268,28 +9552,49 @@ Begin
       Not (LeftUnsigned And ExprKnown And (ExprValue>=0) And (ExprValue<=65535))
         Then Wide:=True;
    If Wide Then Begin
-    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,
-      $D2) Else Emit($99) End;
-    Emit2($89,$C3); Emit2($89,$D1); Emit($58);
-    If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,
-      $D2) Else Emit($99);
-    Emit2($39,$CA); H:=JumpIf($74);
-    Emit2($39,$D8);
-    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73;
-      tkLE:Jcc:=$76 End;
-    Emit2(Jcc Xor 1,3); P:=Jump; Q:=Jump;
-    PatchJump(H,CodeSize);
-    HighJcc:=$74;
-    Case Op Of tkEqual:HighJcc:=$74; tkNE:HighJcc:=$75;
-     tkGreater,tkGE:HighJcc:=$7F; tkLess,tkLE:HighJcc:=$7C End;
-    Emit2(HighJcc Xor 1,3); H:=Jump;
-    PatchJump(Q,CodeSize); Emit2($31,$C0); Q:=Jump;
-    PatchJump(P,CodeSize); PatchJump(H,CodeSize); LoadImmediate(1); PatchJump(Q,
-      CodeSize);
+    { comparaison 32 bits signee, gauche DX:AX : egalite par xor/xor/or,
+      ordre par cmp/sbb (SF et OF de la soustraction 32 bits), operandes
+      permutes pour > et <=; droite constante : valeurs immediates }
+    Known:=WideLeft And WideConst(PushPos,WideRight,ExprUnsigned,CL);
+    If Known And (Op In [tkGreater,tkLE]) And (CL<>$7FFFFFFF) Then Begin
+     { a > c : a >= c+1 ; a <= c : a < c+1 }
+     Inc(CL); If Op=tkGreater Then Op:=tkGE Else Op:=tkLess;
+    End;
+    If Known And Not (Op In [tkGreater,tkLE]) Then Begin
+     If Op In [tkEqual,tkNE] Then Begin
+      Emit($35); EmitWord(Word(CL)); Emit2($81,$F2); EmitWord(Word(CL Shr 16));
+      Emit2($09,$D0);                       { xor ax,lo; xor dx,hi; or ax,dx }
+     End Else Begin
+      Emit($3D); EmitWord(Word(CL)); Emit2($81,$DA); EmitWord(Word(CL Shr 16));
+     End;                                   { cmp ax,lo; sbb dx,hi }
+    End Else Begin
+     If Known Then Begin
+      { constante deja retiree : la recharger a droite (CX:BX) }
+      Emit($BB); EmitWord(Word(CL)); Emit($B9); EmitWord(Word(CL Shr 16));
+     End Else Begin
+      If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,
+        $D2) Else Emit($99) End;
+      Emit2($89,$C3); Emit2($89,$D1); Emit($58);
+      If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,
+        $D2) Else Emit($99);
+     End;
+     Case Op Of
+      tkEqual,tkNE: Begin Emit2($31,$D8); Emit2($31,$CA); Emit2($09,$D0) End;
+      tkLess,tkGE: Begin Emit2($39,$D8); Emit2($19,$CA) End;
+      Else Begin Emit2($39,$C3); Emit2($19,$D1) End;  { > et <= : droite-gauche }
+     End;
+    End;
+    Case Op Of
+     tkEqual:Jcc:=$74; tkNE:Jcc:=$75; tkLess,tkGreater:Jcc:=$7C;
+     Else Jcc:=$7D;
+    End;
+    LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize;
+      CondJcc:=Jcc; CondCmp:=0;
     T:=ttBoolean; ExprType:=5; ExprUnsigned:=False; ExprKnown:=False;
       Expression:=T; Exit;
    End;
-   If TailConst(CV) Then Begin Emit($3D); EmitWord(CV) End
+   CondCmp:=0;
+   If TailConst(CV) Then Begin CondCmp:=CodeSize; Emit($3D); EmitWord(CV) End
    Else If (T=ttInteger) And (R=ttInteger) And (Types[LeftType].Width=2) And
      (Types[ExprType].Width=2) And
            RightLocalWord(PushPos,MD) Then Begin Emit($3B); EmitBP(0,
@@ -10007,7 +10312,7 @@ Begin
  End Else If Name='POS' Then Begin
   Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma);
     StringExpression;
-  Emit2($89,$C7); Emit2($8E,$C2); Emit($5E); Emit($5A); Need(tkRP);
+  DXAXToESDI; Emit($5E); Emit($5A); Need(tkRP);
   Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[2])); Emit($1F);
     StandardFunction:=1;
  End Else If Name='CONCAT' Then Begin
@@ -10452,6 +10757,7 @@ Begin
   PatchJump(P,CodeSize);
  End Else If Name='RANDOMIZE' Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
+  RandomizeSeen:=True;
   Emit2($B4,$2C); Emit2($CD,$21); Emit2($89,$D0); Emit($A3);
     DataAddress(RandomSeed);
   Emit2($89,$0E); DataAddress(RandomSeed+2);
@@ -10612,16 +10918,28 @@ End;
 Procedure AssignToDesignator(Dest: Word);
 { ES:DI = adresse de la destination de type Dest; ":= expression" suit. }
 Var
- T: Byte; SourceType,SourceBuffer,N,StartRhs,FixMark,RelMark,PendMark: Word;
-   Simple,Direct: Boolean;
+ T: Byte; SourceType,SourceBuffer,N,StartRhs,FixMark,RelMark,PendMark,
+   PushLen,LeaLen,LeaAt: Word; Simple,Direct,ViaDs: Boolean;
  DispD: Longint;
 Begin
  If Dest=0 Then Fail(26,'Affectation a une variable sans type');
  { variable scalaire de la frame : la destination est adressee directement par
    [bp+d] }
- Direct:=DirectLocalOK(Dest,False);
+ Direct:=DirectLocalOK(Dest,False); ViaDs:=False; PushLen:=2;
  If Direct Then Begin DispD:=TakeLeaBP;
-   DirIndexed:=False End Else Begin Emit($06); Emit($57) End;
+   DirIndexed:=False End
+ Else If (Types[Dest].Typ In [ttInteger,ttChar,ttBoolean,ttEnum,ttPointer]) And
+   DsTake(0) Then Begin
+  { destination scalaire globale : adressee par DS, seul DI est sauve }
+  ViaDs:=True; PushLen:=1; Emit($57);
+ End Else If TailLeaBP<>0 Then Begin
+  { destination locale : "lea di,[bp+d]; push ss; pop es; push es; push di"
+    -> "push ss; lea di,[bp+d]; push di" (meme longueur que lea+push ss+pop
+    es, reecrit ainsi si le second membre est simple) }
+  LeaLen:=TailLeaBP-2; LeaAt:=CodeSize-LeaLen-2;
+  Move(Image[LeaAt],Image[LeaAt+1],LeaLen); Image[LeaAt]:=$16;
+  Image[LeaAt+LeaLen+1]:=$57; PushLen:=0;
+ End Else Begin Emit($06); Emit($57) End;
  StartRhs:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount;
    PendMark:=PendCount;
  If Types[Dest].Typ In [ttFile,ttText] Then Fail(26,
@@ -10644,10 +10962,14 @@ Begin
    ((CodeSize-StartRhs=2) And (Image[StartRhs]=$31) And
      (Image[StartRhs+1]=$C0)));
  If Direct Then
- Else If Simple Then Begin
-  For N:=StartRhs To CodeSize-1 Do Image[N-2]:=Image[N];
-  Dec(CodeSize,2);
- End Else Begin Emit($5F); Emit($07) End;
+ Else If Simple And (PushLen=0) Then Begin
+  { "push ss; lea; push di" -> "lea; push ss; pop es" }
+  Move(Image[LeaAt+1],Image[LeaAt],LeaLen);
+  Image[LeaAt+LeaLen]:=$16; Image[LeaAt+LeaLen+1]:=$07;
+ End Else If Simple Then Begin
+  For N:=StartRhs To CodeSize-1 Do Image[N-PushLen]:=Image[N];
+  Dec(CodeSize,PushLen);
+ End Else Begin Emit($5F); If Not ViaDs Then Emit($07) End;
  If (OptionBits And 2<>0) And (Types[Dest].Typ In [ttInteger,ttBoolean,ttChar,
    ttEnum]) Then
   RangeBounds(Types[Dest].LowBound,Types[Dest].HighBound,SourceType);
@@ -10719,8 +11041,11 @@ Begin
    If Types[Dest].Width=1 Then EmitBPDisp($88,0,DispD) Else EmitBPDisp($89,0,
      DispD);
    If Types[Dest].Width=4 Then EmitBPDisp($89,2,DispD+2);
-  End Else If Simple Then StoreDesignatorN(Dest,CodeSize-(StartRhs-2))
-  Else StoreDesignator(Dest);
+  End Else Begin
+   StoreViaDs:=ViaDs;
+   If Simple Then StoreDesignatorN(Dest,CodeSize-(StartRhs-PushLen))
+   Else StoreDesignator(Dest);
+  End;
  End;
 End;
 
@@ -11908,10 +12233,14 @@ End;
 
 Procedure CaseStatement;
 { CASE selecteur OF etiquettes, intervalles et partie ELSE (TP 7.0). Le
-  selecteur reste dans AX (DX:AX pour Longint) pendant les comparaisons. }
-Var SelType: Word; T: Byte; Wide, Signed: Boolean;
+  selecteur reste dans AX (DX:AX pour Longint) pendant les comparaisons.
+  Chaque etiquette saute au corps si elle convient ("cmp; je corps"), la
+  derniere d'une branche saute a la branche suivante si elle ne convient pas
+  ("cmp; jne suivante") et le corps suit. Selecteur d'un octet : cmp al,imm8. }
+Var SelType: Word; T: Byte; Wide, Signed, Last, Narrow: Boolean;
  EndJumps: Array[1..512] Of Word; EndCount: Word;
- BodyJumps: Array[1..64] Of Word; BodyCount, NextLabel, N1, N2, K: Word;
+ BodyJumps: Array[1..130] Of Word; BodyCount, K, Skip: Word;
+ NextJumps: Array[1..2] Of Word; NextCount: Word;
  V1, V2: TConstValue;
 Procedure CheckLabel(V: TConstValue);
 Begin
@@ -11920,45 +12249,64 @@ Begin
  If (V.Value<Types[SelType].LowBound) Or (V.Value>Types[SelType].HighBound) Then
    Fail(112,'');
 End;
-Procedure Jcc(SignedCode,UnsignedCode: Byte);
-Begin If Signed Then Emit2(SignedCode,3) Else Emit2(UnsignedCode,3) End;
+Procedure Cmp(V: Longint);
+Begin
+ If Narrow Then Begin Emit($3C); Emit(Byte(V)) End
+ Else Begin Emit($3D); EmitWord(Word(V)) End;
+End;
+Function Cc(SignedCode,UnsignedCode: Byte): Byte;
+Begin If Signed Then Cc:=SignedCode Else Cc:=UnsignedCode End;
+Procedure ToBody(P: Word);
+Begin
+ If BodyCount=130 Then Fail(124,'Trop d''etiquettes CASE');
+ Inc(BodyCount); BodyJumps[BodyCount]:=P;
+End;
+Procedure ToNext(P: Word);
+Begin Inc(NextCount); NextJumps[NextCount]:=P End;
 Begin
  NextToken; T:=Expression; RequireOrdinal(T); SelType:=ExprType;
  Wide:=Types[SelType].Width=4; Signed:=Types[SelType].Signed;
  If (T=ttInteger) And Not Wide Then Signed:=Not ExprUnsigned;
+ Narrow:=Types[SelType].Width=1;
  Need(tkOf); EndCount:=0;
  While Not (Token In [tkEnd,tkElse]) Do Begin
-  BodyCount:=0;
+  BodyCount:=0; NextCount:=0;
   Repeat
    V1:=ConstExpression; CheckLabel(V1);
-   If BodyCount=64 Then Fail(124,'Trop d''etiquettes CASE');
    If Token=tkRange Then Begin
     NextToken; V2:=ConstExpression; CheckLabel(V2);
     If V1.Value>V2.Value Then Fail(28,'');
     If Wide Then Unsupported('intervalle CASE sur Longint');
-    Emit($3D); EmitWord(Word(V1.Value)); Jcc($7D,$73); N1:=Jump;
-    Emit($3D); EmitWord(Word(V2.Value)); Jcc($7E,$76); N2:=Jump;
-    Inc(BodyCount); BodyJumps[BodyCount]:=Jump;
-    PatchJump(N1,CodeSize); PatchJump(N2,CodeSize);
+   End Else V2:=V1;
+   Last:=Token<>tkComma;
+   If V1.Value<>V2.Value Then Begin
+    { intervalle : < V1 -> suite ; <= V2 -> corps }
+    Cmp(V1.Value); Skip:=JumpIf(Cc($7D,$73));
+    Cmp(V2.Value);
+    If Last Then Begin ToNext(Skip); ToNext(JumpIf(Cc($7E,$76))) End
+    Else Begin ToBody(JumpIf(Cc($7F,$77))); PatchJump(Skip,CodeSize) End;
+   End Else If Wide Then Begin
+    Emit($3D); EmitWord(Word(V1.Value)); Skip:=JumpIf($74);
+    Emit2($81,$FA); EmitWord(Word(V1.Value Shr 16));
+    If Last Then Begin ToNext(Skip); ToNext(JumpIf($74)) End
+    Else Begin ToBody(JumpIf($75)); PatchJump(Skip,CodeSize) End;
    End Else Begin
-    Emit($3D); EmitWord(Word(V1.Value)); N1:=JumpIf($74);
-    If Wide Then Begin
-     Emit2($81,$FA); EmitWord(Word(V1.Value Shr 16)); N2:=JumpIf($74);
-    End Else N2:=0;
-    Inc(BodyCount); BodyJumps[BodyCount]:=Jump;
-    PatchJump(N1,CodeSize); If N2<>0 Then PatchJump(N2,CodeSize);
+    Cmp(V1.Value);
+    If Last Then ToNext(JumpIf($74)) Else ToBody(JumpIf($75));
    End;
-   If Token<>tkComma Then Break; NextToken;
+   If Last Then Break; NextToken;
   Until False;
   Need(tkColon);
-  NextLabel:=Jump;
   For K:=1 To BodyCount Do PatchJump(BodyJumps[K],CodeSize);
   Statement;
-  If EndCount=512 Then Fail(124,'Trop de branches CASE');
-  Inc(EndCount); EndJumps[EndCount]:=Jump;
-  PatchJump(NextLabel,CodeSize);
   If Token=tkSemi Then NextToken Else If Not (Token In [tkEnd,
     tkElse]) Then Need(tkSemi);
+  { derniere branche sans ELSE : la suite est la fin du CASE }
+  If Token<>tkEnd Then Begin
+   If EndCount=512 Then Fail(124,'Trop de branches CASE');
+   Inc(EndCount); EndJumps[EndCount]:=Jump;
+  End;
+  For K:=1 To NextCount Do PatchJump(NextJumps[K],CodeSize);
  End;
  If Token=tkElse Then Begin NextToken; StatementList(tkEnd) End;
  Need(tkEnd);
@@ -12010,7 +12358,7 @@ Procedure DefineLabel(I: Word);
 Var K: Word;
 Begin
  If Symbols[I].HasBody Then Fail(81,Symbols[I].Name);
- Symbols[I].HasBody:=True; Symbols[I].Addr:=CodeSize;
+ Symbols[I].HasBody:=True; Symbols[I].Addr:=CodeSize; Inc(LabelDefs);
  For K:=1 To LabelJumpCount Do If LabelJumps[K].Sym=I Then Begin
   PatchJump(LabelJumps[K].Position,CodeSize); LabelJumps[K].Sym:=0;
  End;
@@ -12102,9 +12450,37 @@ Begin
  Else If Name='PORT' Then Emit($EE) Else Emit($EF);
 End;
 
+Procedure DeadStatement;
+{ Branche d'un If dont la condition est constante et fausse : compilee
+  (analyse, erreurs) puis retiree avec ses references, comme le corps d'une
+  routine jamais appelee. Si elle definit une etiquette, elle reste (sautee). }
+Var
+ P,MCode,MFix,MRel,MNat,MReloc,MRefs,MObj,MPend,MDbg,MLab,MDataFix,MLoop,
+   MEdge,MData,MLabDef,MClone,MExit: Word; MTot: Longint;
+Begin
+ MCode:=CodeSize; MFix:=FixupCount; MRel:=RelativeCount; MNat:=NativeRefCount;
+ MReloc:=RelocationCount; MRefs:=CodeRefCount; MObj:=ObjectCallCount;
+ MPend:=PendCount; MDbg:=DebugCount; MLab:=LabelJumpCount;
+ MDataFix:=DataFixupCount; MLoop:=LoopJumpCount; MEdge:=EdgeCount;
+ MData:=DataSize; MLabDef:=LabelDefs; MClone:=CloneCount; MTot:=TotalEmitted;
+ MExit:=ExitJumpCount;
+ P:=JumpLong;
+ Statement;
+ If LabelDefs<>MLabDef Then Begin PatchJump(P,CodeSize); Exit End;
+ CodeSize:=MCode; FixupCount:=MFix; RelativeCount:=MRel; NativeRefCount:=MNat;
+ RelocationCount:=MReloc; CodeRefCount:=MRefs; ObjectCallCount:=MObj;
+ PendCount:=MPend; DebugCount:=MDbg; LabelJumpCount:=MLab;
+ DataFixupCount:=MDataFix; LoopJumpCount:=MLoop; EdgeCount:=MEdge;
+ CloneCount:=MClone; TotalEmitted:=MTot; ExitJumpCount:=MExit;
+ If DataSize>MData Then FillChar(Data[MData],DataSize-MData,0);
+ DataSize:=MData; TrimLiterals(DataSize);
+ LastJumpTarget:=CodeSize; CondTail:=0;
+End;
+
 Procedure StatementBody;
 Var
- I, Start, P, Q, ContinueAt: Word; ForDisp: Longint; ForFrame: Boolean;
+ I, Start, P, Q, ContinueAt, G, SavedGuard, FB, TB: Word; ForDisp: Longint;
+ ForFrame, Known, ConstBound: Boolean; BoundV: Word;
  Direction, Ignored: Byte;
  Name, VarName: TShortString;
 Begin
@@ -12141,26 +12517,51 @@ Begin
  End;
  tkIf:
  Begin
-  NextToken; RequireBoolean(Expression); Need(tkThen); P:=JumpZero;
-  Statement;
-  If Token=tkElse Then Begin
-   Q:=Jump; PatchJump(P,CodeSize); NextToken; Statement; PatchJump(Q,CodeSize);
-  End Else PatchJump(P,CodeSize);
+  NextToken; PendingGuard:=0; Start:=CodeSize; P:=FixupCount; Q:=RelativeCount;
+  FB:=CondFN; TB:=CondTN; CondReq:=OptionBits And $40=0;
+  RequireBoolean(Expression); CondReq:=False;
+  G:=PendingGuard; PendingGuard:=0;
+  If ExprKnown And (CodeSize=Start+3) And (Image[Start]=$B8) And
+    (FixupCount=P) And (RelativeCount=Q) And (LastJumpTarget<>CodeSize) And
+    (CondFN=FB) And (CondTN=TB) Then
+    Begin
+   { condition constante : seule la branche choisie est compilee }
+   CodeSize:=Start; LastJumpTarget:=CodeSize; Known:=ExprValue<>0;
+   Need(tkThen);
+   If Known Then Statement Else DeadStatement;
+   If Token=tkElse Then Begin
+    NextToken; If Known Then DeadStatement Else Statement;
+   End;
+  End Else Begin
+   Need(tkThen); P:=JumpZero; CondPatch(True,TB,CodeSize);
+   SavedGuard:=CurGuard; If G<>0 Then CurGuard:=G;
+   Statement; CurGuard:=SavedGuard;
+   If Token=tkElse Then Begin
+    Q:=Jump; PatchJump(P,CodeSize); CondPatch(False,FB,CodeSize);
+    NextToken; Statement; PatchJump(Q,CodeSize);
+   End Else Begin PatchJump(P,CodeSize); CondPatch(False,FB,CodeSize) End;
+  End;
  End;
  tkCase:CaseStatement;
  tkInline:Begin NextToken; VarName:=InlineBytes(True);
    For P:=1 To Length(VarName) Do Emit(Ord(VarName[P])) End;
  tkWhile:
  Begin
-  NextToken; Start:=CodeSize; RequireBoolean(Expression); Need(tkDo);
-  P:=JumpZero; LoopEnter; Statement; JumpTo(Start); PatchJump(P,CodeSize);
+  NextToken; Start:=CodeSize;
+  FB:=CondFN; TB:=CondTN; CondReq:=OptionBits And $40=0;
+  RequireBoolean(Expression); CondReq:=False; Need(tkDo);
+  P:=JumpZero; CondPatch(True,TB,CodeSize);
+  LoopEnter; Statement; JumpTo(Start); PatchJump(P,CodeSize);
+  CondPatch(False,FB,CodeSize);
   LoopLeave(CodeSize,Start);
  End;
  tkRepeat:
  Begin
   NextToken; Start:=CodeSize; LoopEnter; StatementList(tkUntil); Need(tkUntil);
   Q:=CodeSize; { Continue reprend a l'evaluation de la condition }
-  RequireBoolean(Expression); P:=JumpZero; PatchJump(P,Start);
+  FB:=CondFN; TB:=CondTN; CondReq:=OptionBits And $40=0;
+  RequireBoolean(Expression); CondReq:=False; P:=JumpZero; PatchJump(P,Start);
+  CondPatch(False,FB,Start); CondPatch(True,TB,CodeSize);
   LoopLeave(CodeSize,Q);
  End;
  tkFor:
@@ -12180,17 +12581,27 @@ Begin
   SaveSymbol(I);
   Direction:=Token;
   If Not (Direction In [tkTo,tkDownto]) Then Fail(58,'TO ou DOWNTO attendu');
-  NextToken; Ignored:=Expression;
+  NextToken; Start:=CodeSize; P:=FixupCount; Q:=RelativeCount;
+  Ignored:=Expression;
   If Not CompatibleTypes(SymbolType(I),ExprType) Then Fail(26,'Borne FOR');
+  { borne constante : comparee en immediat, ni rangee ni empilee }
+  ConstBound:=ExprKnown And (CodeSize=Start+3) And (Image[Start]=$B8) And
+    (FixupCount=P) And (RelativeCount=Q) And (OptionBits And 2=0) And
+    (LastJumpTarget<=Start);
+  If ConstBound Then Begin
+   CodeSize:=Start; BoundV:=Word(ExprValue);
+   If Symbols[I].Width=1 Then BoundV:=BoundV And $FF;
+  End;
   If OptionBits And 2<>0 Then RangeBounds(Types[SymbolType(I)].LowBound,
     Types[SymbolType(I)].HighBound,ExprType);
   { Comme TP, la borne est tronquee a la taille de la variable de controle
     (For B:=1 To -1 avec B: Byte boucle jusqu'a 255 puis s'arrete). }
-  If Symbols[I].Width=1 Then ZeroAH;
+  If (Symbols[I].Width=1) And Not ConstBound Then ZeroAH;
   { borne : dans la frame (un mot de plus) si on est dans une routine,
     sinon sur la pile }
   ForFrame:=RealScope(CurrentScope)<>0;
-  If ForFrame Then Begin
+  If ConstBound Then
+  Else If ForFrame Then Begin
    Inc(Scopes[RealScope(CurrentScope)].LocalSize,2);
    ForDisp:=-Longint(Scopes[RealScope(CurrentScope)].LocalSize);
    If Scopes[RealScope(CurrentScope)].LocalSize>65500 Then Fail(49,
@@ -12199,7 +12610,8 @@ Begin
   End Else Begin Emit($50); Inc(StackLoops) End;
   Need(tkDo);
   Start:=CodeSize; LoadSymbol(I);
-  If ForFrame Then Begin Emit($3B); EmitBP(0,
+  If ConstBound Then Begin Emit($3D); EmitWord(BoundV) End
+  Else If ForFrame Then Begin Emit($3B); EmitBP(0,
     SmallInt(ForDisp)) End Else Begin Emit2($89,$E3); Emit($36); Emit2($3B,
       $07) End;
   If Types[SymbolType(I)].Signed Then Begin
@@ -12211,7 +12623,8 @@ Begin
       { Tester l'egalite AVANT inc/dec evite le debordement a +/-32768. }
   ContinueAt:=CodeSize;
   LoadSymbol(I);
-  If ForFrame Then Begin Emit($3B); EmitBP(0,SmallInt(ForDisp));
+  If ConstBound Then Begin Emit($3D); EmitWord(BoundV); Q:=JumpIf($75) End
+  Else If ForFrame Then Begin Emit($3B); EmitBP(0,SmallInt(ForDisp));
     Q:=JumpIf($75) End
   Else Begin Emit2($89,$E3); Emit($36); Emit2($3B,$07); Q:=JumpIf($75) End;
   If SimpleScalar(I) And Symbols[I].Local And
@@ -12228,7 +12641,8 @@ Begin
   JumpTo(Start); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
   { Break sort avant la liberation de la borne empilee, comme P et Q. }
   LoopLeave(CodeSize,ContinueAt);
-  If Not ForFrame Then Begin Emit2($83,$C4); Emit(2); Dec(StackLoops) End;
+  If Not ForFrame And Not ConstBound Then Begin Emit2($83,$C4); Emit(2);
+    Dec(StackLoops) End;
  End;
  tkIdent:
  Begin
@@ -12258,6 +12672,10 @@ Begin
   End Else If (I=0) And (Token<>tkDot) And (Name='EXIT') Then Begin
    If Not InProcedure Then Begin LoadImmediate(0);
      CallTo(RtlTarget(RuntimeHalt)) End
+   Else If (RealScope(CurrentScope)<>0) And (StackLoops=0) And
+     (ExitJumpCount<2048) Then Begin
+    Inc(ExitJumpCount); ExitJumps[ExitJumpCount]:=Jump;
+   End
    Else If RealScope(CurrentScope)<>0 Then ProcedureExit Else If MultiSeg Then
      Emit($CB) Else Emit($C3);
   End Else If (I=0) And (Token<>tkDot) And ((Name='INC') Or (Name='DEC')) Then
@@ -13171,7 +13589,7 @@ Var
  SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,
    IsExternal,IsConst,DeadHere: Boolean;
  MCode,MFix,MRel,MNat,MReloc,MObj,MPend,MDbg,MLab,MData,MDataFix,SavedCur,
-   MRefs: Word; MTot: Longint;
+   MRefs,ExitBase: Word; MTot: Longint;
  SavedDead: Boolean;
  Sig: TSymbol; Name,ShortName,SavedObjName: TShortString; MyOrd,MethodObj,
    SelfSym,FieldIdx: Word;
@@ -13482,7 +13900,10 @@ Begin
    (Symbols[J].Scope=CurrentScope) And (Symbols[J].Kind=skProc) And
    Not Symbols[J].HasBody Then Fail(59,Symbols[J].Name);
  If Token=tkAsm Then Symbols[I].AssemblerBody:=True;
- Statement; ProcedureExit; CheckLabels(CurrentScope);
+ ExitBase:=ExitJumpCount; Statement;
+ While ExitJumpCount>ExitBase Do Begin
+  PatchJump(ExitJumps[ExitJumpCount],CodeSize); Dec(ExitJumpCount) End;
+ ProcedureExit; CheckLabels(CurrentScope);
  { La taille de la frame inclut les temporaires alloues par les WITH. }
  If FramePatch<>0 Then PatchWord(FramePatch,Scopes[CurrentScope].LocalSize);
  If (MyOrd<>0) And Not Symbols[I].NoFrame And Not Symbols[I].AssemblerBody And
@@ -17795,12 +18216,205 @@ Begin
  EmitRuntimeError;
 End;
 
+Function RtlKeyAddr(K: Word): Word;
+Begin
+ Case K Of
+  1..96: RtlKeyAddr:=RuntimeStandard[K];
+  97: RtlKeyAddr:=RuntimeChar;     98: RtlKeyAddr:=RuntimeRawChar;
+  99: RtlKeyAddr:=RuntimeString;   100: RtlKeyAddr:=RuntimeInteger;
+  101: RtlKeyAddr:=RuntimeUnsigned; 102: RtlKeyAddr:=RuntimeBoolean;
+  103: RtlKeyAddr:=RuntimeCopy;     104: RtlKeyAddr:=RuntimeHalt;
+  105: RtlKeyAddr:=RuntimeError;    106: RtlKeyAddr:=RuntimeBodyEnd;
+  Else RtlKeyAddr:=0;
+ End;
+End;
+
+Procedure RtlSetKey(K,A: Word);
+Begin
+ Case K Of
+  1..96: RuntimeStandard[K]:=A;
+  97: RuntimeChar:=A;     98: RuntimeRawChar:=A;
+  99: RuntimeString:=A;   100: RuntimeInteger:=A;
+  101: RuntimeUnsigned:=A; 102: RuntimeBoolean:=A;
+  103: RuntimeCopy:=A;     104: RuntimeHalt:=A;
+  105: RuntimeError:=A;    106: RuntimeBodyEnd:=A;
+ End;
+End;
+
+Var
+ RtlS, RtlE, RtlNewS: Array[1..RtlKeys+1] Of Word;
+ RtlKey: Array[1..RtlKeys+1] Of Byte;
+ RtlKeep: Array[1..RtlKeys+1] Of Boolean;
+ RtlDep: Array[1..RtlKeys+1,1..RtlKeys+1] Of Boolean;
+
+Procedure RtlCompact(Start: Word; Safe: Boolean);
+{ Runtime emis en entier dans [Start,CodeSize) : le decoupe en routines
+  (une par point d'entree), calcule leurs dependances (sauts et appels
+  relatifs, continuation dans la routine suivante) et, si RtlTrimNow, retire
+  celles que la passe precedente n'a pas atteintes (RtlWant). Les octets, les
+  sauts relatifs, les fixups de donnees et les relocalisations sont deplaces;
+  une cle retiree prend l'adresse $FF00+cle (RtlTarget la detecte). Aucune
+  donnee ni aucun saut court ecrit a la main ne franchit une frontiere de
+  routine dans le runtime. }
+Var
+ N,I,J,K,A,Fin,Cur,P,T: Word; More,Moved: Boolean;
+
+ Function ChunkOf(X: Word): Word;
+ Var C: Word;
+ Begin
+  ChunkOf:=0;
+  If (X<Start) Or (X>=Fin) Then Exit;
+  For C:=1 To N Do If (X>=RtlS[C]) And (X<RtlE[C]) Then Begin
+    ChunkOf:=C; Exit End;
+ End;
+
+ Function MapAddr(X: Word): Word;
+ Var C: Word;
+ Begin
+  C:=ChunkOf(X);
+  If C=0 Then MapAddr:=X Else MapAddr:=RtlNewS[C]+X-RtlS[C];
+ End;
+
+ Function Ends(C: Word): Boolean;
+ { la routine C se termine par ret/retf/iret ou par un jmp rel16 }
+ Var B,K: Word;
+ Begin
+  B:=Image[RtlE[C]-1];
+  Ends:=(B=$C3) Or (B=$CB) Or (B=$CF);
+  If (RtlE[C]-RtlS[C]>=3) And ((Image[RtlE[C]-3]=$C2) Or
+    (Image[RtlE[C]-3]=$CA)) Then Ends:=True;    { ret n, retf n }
+  { fin du programme : mov ah,4Ch; int 21h ne revient pas }
+  If (RtlE[C]-RtlS[C]>=4) And (Image[RtlE[C]-4]=$B4) And
+    (Image[RtlE[C]-3]=$4C) And (Image[RtlE[C]-2]=$CD) And
+    (Image[RtlE[C]-1]=$21) Then Ends:=True;
+  If (RtlE[C]-RtlS[C]>=3) And (Image[RtlE[C]-3]=$E9) Then
+   For K:=1 To RelativeCount Do
+    If RelativeFixups[K].Position=RtlE[C]-2 Then Ends:=True;
+ End;
+
+Begin
+ Fin:=CodeSize; N:=0;
+ RtlLo:=0; RtlHi:=0; RtlChunks:=0;
+ { points d'entree tries par adresse (cle la plus petite d'abord) }
+ For K:=1 To RtlKeys Do Begin
+  A:=RtlKeyAddr(K);
+  If (A>=Start) And (A<Fin) Then Begin
+   J:=0;
+   For I:=1 To N Do If RtlS[I]=A Then J:=I;
+   If J=0 Then Begin
+    Inc(N); I:=N;
+    While (I>1) And (RtlS[I-1]>A) Do Begin
+     RtlS[I]:=RtlS[I-1]; RtlKey[I]:=RtlKey[I-1]; Dec(I) End;
+    RtlS[I]:=A; RtlKey[I]:=K;
+   End;
+  End;
+ End;
+ If (N=0) Or (RtlS[1]<>Start) Then Begin
+  { debut sans point d'entree : toujours garde (cle 0) }
+  For I:=N DownTo 1 Do Begin RtlS[I+1]:=RtlS[I]; RtlKey[I+1]:=RtlKey[I] End;
+  Inc(N); RtlS[1]:=Start; RtlKey[1]:=0;
+ End;
+ For I:=1 To N Do If I<N Then RtlE[I]:=RtlS[I+1] Else RtlE[I]:=Fin;
+ { dependances }
+ FillChar(RtlDep,SizeOf(RtlDep),0);
+ For K:=1 To RelativeCount Do Begin
+  I:=ChunkOf(RelativeFixups[K].Position); J:=ChunkOf(RelativeFixups[K].Target);
+  If (I<>0) And (J<>0) And (I<>J) Then RtlDep[I,J]:=True;
+ End;
+ For I:=1 To N-1 Do If Not Ends(I) Then RtlDep[I,I+1]:=True;
+ { routines gardees : voulues (une des cles a cette adresse) et fermeture }
+ For I:=1 To N Do Begin
+  RtlKeep[I]:=Not RtlTrimNow Or Not Safe Or (RtlKey[I]=0);
+  If Not RtlKeep[I] Then
+   For K:=1 To RtlKeys Do
+    If RtlWant[K] And (RtlKeyAddr(K)=RtlS[I]) Then RtlKeep[I]:=True;
+ End;
+ Repeat
+  More:=False;
+  For I:=1 To N Do If RtlKeep[I] Then
+   For J:=1 To N Do If RtlDep[I,J] And Not RtlKeep[J] Then Begin
+     RtlKeep[J]:=True; More:=True End;
+ Until Not More;
+ Cur:=Start; Moved:=False;
+ For I:=1 To N Do Begin
+  RtlNewS[I]:=Cur;
+  If RtlKeep[I] Then Inc(Cur,RtlE[I]-RtlS[I]) Else Moved:=True;
+ End;
+ If GetEnv('UPC_RTLDBG')<>'' Then Begin
+  For I:=1 To N Do Begin
+   Write(StdErr,'RTL cle=',RtlKey[I],' ',RtlS[I],'..',RtlE[I],' fin=',
+     Ord(Ends(I)),' garde=',Ord(RtlKeep[I]),' dep:');
+   For J:=1 To N Do If RtlDep[I,J] Then Write(StdErr,' ',RtlKey[J]);
+   WriteLn(StdErr);
+  End;
+  WriteLn(StdErr,'RTL taille ',Fin-Start,' -> ',Cur-Start);
+ End;
+ If Moved Then Begin
+  { octets }
+  For I:=1 To N Do If RtlKeep[I] And (RtlNewS[I]<>RtlS[I]) Then Begin
+   Move(Image[RtlS[I]],Image[RtlNewS[I]],RtlE[I]-RtlS[I]);
+   Move(OrdAt[RtlS[I]],OrdAt[RtlNewS[I]],(RtlE[I]-RtlS[I])*2);
+   Move(CodeOwners[RtlS[I]],CodeOwners[RtlNewS[I]],RtlE[I]-RtlS[I]);
+  End;
+  { sauts et appels relatifs }
+  J:=0;
+  For K:=1 To RelativeCount Do Begin
+   P:=RelativeFixups[K].Position; T:=RelativeFixups[K].Target;
+   I:=ChunkOf(P);
+   If (I=0) Or RtlKeep[I] Then Begin
+    Inc(J); P:=MapAddr(P); T:=MapAddr(T);
+    RelativeFixups[J].Position:=P; RelativeFixups[J].Target:=T;
+    PatchWord(P,Word(Longint(T)-P-2));
+   End;
+  End;
+  RelativeCount:=J;
+  { fixups de donnees }
+  J:=0;
+  For K:=1 To FixupCount Do Begin
+   I:=ChunkOf(Fixups[K].Position);
+   If (I=0) Or RtlKeep[I] Then Begin
+    Inc(J); Fixups[J].Position:=MapAddr(Fixups[K].Position);
+    Fixups[J].DataOffset:=Fixups[K].DataOffset;
+   End;
+  End;
+  FixupCount:=J;
+  { relocalisations }
+  J:=0;
+  For K:=1 To RelocationCount Do Begin
+   I:=ChunkOf(Relocations[K].Offs);
+   If (Relocations[K].Segm<>0) Or (I=0) Or RtlKeep[I] Then Begin
+    Inc(J); Relocations[J]:=Relocations[K];
+    RelocationKinds[J]:=RelocationKinds[K];
+    If Relocations[J].Segm=0 Then
+      Relocations[J].Offs:=MapAddr(Relocations[J].Offs);
+   End;
+  End;
+  RelocationCount:=J;
+  { points d'entree }
+  For K:=1 To RtlKeys Do Begin
+   A:=RtlKeyAddr(K); I:=ChunkOf(A);
+   If I<>0 Then
+    If RtlKeep[I] Then RtlSetKey(K,MapAddr(A)) Else RtlSetKey(K,$FF00+K);
+  End;
+  CodeSize:=Cur; LastJumpTarget:=CodeSize; CondTail:=0;
+ End;
+ { table des routines gardees (utilisation par le programme) }
+ For I:=1 To N Do If RtlKeep[I] Then Begin
+  Inc(RtlChunks); RtlCStart[RtlChunks]:=RtlNewS[I];
+  RtlCEnd[RtlChunks]:=RtlNewS[I]+RtlE[I]-RtlS[I]; RtlCKey[RtlChunks]:=RtlKey[I];
+ End;
+ RtlLo:=Start; RtlHi:=CodeSize;
+End;
+
 Procedure CompileProgram;
 Var
  I: Word; MTotMain: Longint; UnixUnit: Byte;
 Begin
  KernelMode:=False; HaveKernel:=False; CloneCount:=0; StringRingMask:=2047;
    LitCount:=0;
+ GuardOrd:=0; CurGuard:=0; PendingGuard:=0; LabelDefs:=0; ExitJumpCount:=0;
+ BvaSnap.P:=$FFFF; DesigSnap.P:=$FFFF; DerefCount:=0; DsDirect:=False;
+ CondReq:=False; CondFN:=0; CondTN:=0;
  If MultiSeg Then FillChar(Data,SizeOf(Data),0);
    { la disposition des donnees change entre les passes mono-segment et
      multi-segments }
@@ -17845,7 +18459,14 @@ Begin
      complete a l'edition de liens }
  Else EntryFixup:=Jump;
  DataSegVar:=CodeSize; AddSegmentRelocation(CodeSize,3); EmitWord(0);
- Inc(RuntimeDepth); EmitRuntime; Dec(RuntimeDepth); RuntimeEnd:=CodeSize;
+ RtlLo:=0; RtlHi:=0; RtlChunks:=0; RtlMissing:=False;
+ FillChar(RtlUsed,SizeOf(RtlUsed),0);
+ I:=CodeSize; RtlSafeCounts:=Longint(CodeRefCount)+PendCount+NativeRefCount+
+   LabelJumpCount+DataFixupCount+DebugCount+ObjectCallCount;
+ Inc(RuntimeDepth); EmitRuntime; Dec(RuntimeDepth);
+ RtlCompact(I,RtlSafeCounts=Longint(CodeRefCount)+PendCount+NativeRefCount+
+   LabelJumpCount+DataFixupCount+DebugCount+ObjectCallCount);
+ RuntimeEnd:=CodeSize;
  RtlFix:=FixupCount; RtlReloc:=RelocationCount;
  { InOutRes partage l'emplacement de l'erreur d'E/S du runtime. }
  For I:=1 To SymbolCount Do If (Symbols[I].Owner=255) And
@@ -19030,17 +19651,48 @@ End;
 Procedure SmartLink;
 { DeadProc := routines non atteignables depuis les racines (code principal et
   initialisations d'unites = CurProc 0, routines de l'interface d'une unite
-  compilee seule). }
-Var Live: Array[1..MaxSymbols] Of Boolean; K,Changed: Word; More: Boolean;
+  compilee seule). Une arete gardee par Linked(...) ne compte que si une des
+  routines nommees est vivante. }
+Var Live: Array[1..MaxSymbols] Of Boolean; K,Changed,G: Word; More: Boolean;
+
+ Function GuardLive(G: Word): Boolean;
+ Var N,U,P: TShortString; I,K: Word;
+ Begin
+  GuardLive:=False; N:=GuardNames[G]+',';
+  While N<>'' Do Begin
+   I:=Pos(',',N); U:=Copy(N,1,I-1); Delete(N,1,I);
+   For I:=1 To Length(U) Do U[I]:=UpCase(U[I]);
+   While (U<>'') And (U[1]=' ') Do Delete(U,1,1);
+   I:=Pos('.',U); P:=Copy(U,I+1,255); U:=Copy(U,1,I-1);
+   If (U='SYSTEM') And (P='RANDOMIZE') And RandomizeSeen Then Begin
+     GuardLive:=True; Exit End;
+   For K:=1 To SymbolCount Do
+    If Live[K] And (Symbols[K].Kind=skProc) And (Symbols[K].Name=P) And
+      (Symbols[K].Owner>=1) And (Symbols[K].Owner<=UnitCount) Then
+     If Units[Symbols[K].Owner].Name=U Then Begin GuardLive:=True; Exit End;
+  End;
+ End;
+
 Begin
  FillChar(Live,SizeOf(Live),0);
  For K:=1 To SymbolCount Do If RootProc[K] And UnitOutput Then Live[K]:=True;
+ FillChar(GuardResult,SizeOf(GuardResult),0);
  Repeat
   More:=False;
   For K:=1 To EdgeCount Do
    If ((EdgeFrom[K]=0) Or Live[EdgeFrom[K]]) And Not Live[EdgeTo[K]] Then Begin
-     Live[EdgeTo[K]]:=True; More:=True End;
+    G:=EdgeGuard[K];
+    If G<>0 Then If Not GuardResult[G] Then Begin
+     GuardResult[G]:=GuardLive(G); If GuardResult[G] Then More:=True;
+    End;
+    If (G=0) Or GuardResult[G] Then Begin Live[EdgeTo[K]]:=True; More:=True End;
+   End;
  Until Not More;
+ For G:=1 To GuardCount Do Begin
+  If Not GuardResult[G] Then GuardResult[G]:=GuardLive(G);
+  If GetEnv('UPC_SHOWDEAD')<>'' Then
+    WriteLn(StdErr,'LINKED ',GuardNames[G],' = ',GuardResult[G]);
+ End;
  Changed:=0;
  For K:=1 To SymbolCount Do
   If (Symbols[K].Kind=skProc) And Symbols[K].HasBody And Not Symbols[K].Native
@@ -19106,9 +19758,20 @@ BEGIN
    TotalEmitted:=0; JumpOrd:=0; JumpOverflow:=False;
  ReportCount:=0; RuntimeDepth:=0;
  FillChar(DeadProc,SizeOf(DeadProc),0); FillChar(RootProc,SizeOf(RootProc),0);
+ RtlEnable:=False; RtlTrimNow:=False; FillChar(RtlWant,SizeOf(RtlWant),1);
+ GuardCount:=0; FillChar(GuardResult,SizeOf(GuardResult),1);
+ RandomizeSeen:=False;
  { passe 1 : analyse (sauts longs, graphe d'appels) }
  LoadSource; CompileProgram;
  AnalysisPass:=False;
+ { compaction du runtime : pas pour une unite, ni avec du code natif (TPU
+   Borland, OBJ), des overlays ou une unite noyau, qui designent le runtime
+   par des adresses fixes }
+ RtlEnable:=Not UnitOutput And Not NativeNeeded And (ObjectCount=0) And
+   Not KernelSeen And (GetEnv('UPC_NORTL')='');
+ For PassI:=1 To UnitCount Do
+  If Not Units[PassI].FromSource Or (Units[PassI].Name='OVERLAY') Then
+    RtlEnable:=False;
  PassNo:=1;
  { Mode multi-segments : possible seulement pour un programme (pas une unite ni
    un noyau) dont le code deborde.
@@ -19151,6 +19814,7 @@ BEGIN
      quelques passes }
  Repeat
   Inc(PassNo);
+  Move(RtlUsed,RtlWant,SizeOf(RtlWant)); RtlTrimNow:=RtlEnable;
   Move(ShortNext,ShortPred,SizeOf(ShortPred)); FillChar(ShortNext,
     SizeOf(ShortNext),0);
   Move(FrameNext,FramePred,SizeOf(FramePred)); FillChar(FrameNext,
@@ -19185,9 +19849,12 @@ BEGIN
    For PassI:=1 To 8000 Do If FrameNext[PassI]<>FramePred[PassI] Then
      Stable:=False;
    If JumpOverflow Then Stable:=False;
+   If RtlMissing Then Stable:=False;
+   For PassI:=1 To RtlKeys Do If RtlTrimNow And (RtlUsed[PassI]<>RtlWant[PassI])
+     Then Stable:=False;
    If GetEnv('UPC_PASSES')<>'' Then Begin
     Write(StdErr,'  passe ',PassNo,' segments=',SegCount,' stable=',Stable,
-      ' jmpovf=',JumpOverflow,' tropgrand=',SegTooBig,' tailles:');
+      ' rtlmanque=',RtlMissing,' jmpovf=',JumpOverflow,' tropgrand=',SegTooBig,' tailles:');
     For PassI:=0 To SegCount-1 Do Write(StdErr,' ',SegSaved[PassI].Size);
     WriteLn(StdErr);
     Write(StdErr,'   diff ordinaux:');
@@ -19206,8 +19873,10 @@ BEGIN
   End;
  Until (Stable And Not JumpOverflow And Not SegTooBig) Or
    (PassNo>=10+4*Ord(MultiSeg));
- If JumpOverflow Then Begin
-  { filet de securite : derniere passe sans saut court }
+ If JumpOverflow Or RtlMissing Then Begin
+  { filet de securite : derniere passe sans saut court, avec le runtime
+    complet }
+  RtlTrimNow:=False;
   FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),
     0);
   FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,SizeOf(FrameNext),
@@ -19238,7 +19907,7 @@ BEGIN
   If Overflowed And Not MultiSeg Then Fail(48,'Segment de code trop grand');
  End;
  If SegTooBig Then Fail(48,'Segment de code trop grand');
- If GetEnv('UPC_PASSES')<>'' Then WriteLn(StdErr,'PASSES ',PassNo,' overflow=',
+ If GetEnv('UPC_PASSES')<>'' Then WriteLn(StdErr,'PASSES ',PassNo,' sauts=',JumpOrd,' overflow=',
    JumpOverflow,' segments=',SegCount);
  For PassI:=1 To ReportCount Do WriteLn(ReportLines[PassI]);
  If GetEnv('UPC_SIZES')<>'' Then WriteLn(StdErr,'OCTETS EMIS ',TotalEmitted);

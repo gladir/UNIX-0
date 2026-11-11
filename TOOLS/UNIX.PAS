@@ -1499,14 +1499,20 @@ Begin
   $2F: Begin RES:=DtaSeg; RBX:=DtaOfs End;
   $25: ; { vecteurs geres par le noyau : sans effet }
   $35: Begin RBX:=MemW[0:AL*4]; RES:=MemW[0:AL*4+2] End;
-  $2A: Begin DateOf(Y,M,D,W,H,Mi,Se); RCX:=Y; RDX:=M*256+D;
-         RAX:=(RAX And $FF00) Or W End;
-  $2C: Begin DateOf(Y,M,D,W,H,Mi,Se); RCX:=H*256+Mi; RDX:=Se*256 End;
+  { Linked(...) : le service n'est lie que si le programme utilise une des
+    routines nommees (sinon il ne peut pas etre demande) }
+  $2A: If Linked('DOS.GETDATE,DOS.INTR,DOS.MSDOS') Then Begin
+         DateOf(Y,M,D,W,H,Mi,Se); RCX:=Y; RDX:=M*256+D;
+         RAX:=(RAX And $FF00) Or W End Else SetCarry(1);
+  $2C: If Linked('DOS.GETTIME,DOS.INTR,DOS.MSDOS,SYSTEM.RANDOMIZE') Then Begin
+         DateOf(Y,M,D,W,H,Mi,Se); RCX:=H*256+Mi; RDX:=Se*256 End
+       Else SetCarry(1);
   $2B,$2D: RAX:=RAX And $FF00;
   $2E,$54: RAX:=RAX And $FF00;
   $30: Begin RAX:=$0005; RBX:=$FF00; RCX:=0 End; { version 5.0 }
   $33: RDX:=RDX And $FF00;
-  $36: DosDiskFree;
+  $36: If Linked('DOS.DISKFREE,DOS.DISKSIZE,DOS.INTR,DOS.MSDOS') Then
+         DosDiskFree Else SetCarry(1);
   $39: If SysMkdir(UnixPath(FarString(RDS,RDX)),$1ED)<0 Then Fail;
   $3A: If SysRmdir(UnixPath(FarString(RDS,RDX)))<0 Then Fail;
   $3B: If SysChdir(UnixPath(FarString(RDS,RDX)))<0 Then SetCarry(3);
@@ -1579,21 +1585,24 @@ Begin
   $48: DosAlloc;
   $49: DosFree;
   $4A: DosResize;
-  $4B: If AL=0 Then DosExec Else SetCarry(1);
+  $4B: If Linked('DOS.EXEC,DOS.INTR,DOS.MSDOS') Then Begin
+         If AL=0 Then DosExec Else SetCarry(1) End Else SetCarry(1);
   $4C: SysExit(AL);
   $4D: Begin RAX:=LastExit; LastExit:=0 End;
-  $4E: DosFindFirst;
-  $4F: DosFindNext;
+  $4E: If Linked('DOS.FINDFIRST,DOS.INTR,DOS.MSDOS') Then DosFindFirst
+       Else SetCarry(1);
+  $4F: If Linked('DOS.FINDNEXT,DOS.INTR,DOS.MSDOS') Then DosFindNext
+       Else SetCarry(1);
   $50: ;
   $51,$62: RBX:=PrefixSeg;
   $56: If SysRename(UnixPath(FarString(RDS,RDX)),
           UnixPath(FarString(RES,RDI)))<0 Then Fail;
-  $57: Begin
-        If AL=0 Then Begin
+  $57: If AL=0 Then Begin
+        If Linked('DOS.GETFTIME,DOS.INTR,DOS.MSDOS') Then Begin
          If SysFStat(RBX,St)<0 Then Fail Else Begin
           L:=DosTime(St.MTime); RCX:=Word(L); RDX:=Word(L Shr 16);
          End;
-        End;
+        End Else SetCarry(1);
        End;
   $59: Begin RAX:=0; RBX:=0; RCX:=0 End;
   $5A: Begin
@@ -1684,6 +1693,8 @@ Begin
    la trampoline des gestionnaires de signaux }
  SetRegs(SYS_setdos,Ofs(DosEntry),Seg(DosEntry),0);
  DoSys;
- SetRegs(SYS_sigtramp,Ofs(SigTrampoline),Seg(SigTrampoline),0);
- DoSys;
+ If Linked('UNIX.SYSSIGNAL') Then Begin
+  SetRegs(SYS_sigtramp,Ofs(SigTrampoline),Seg(SigTrampoline),0);
+  DoSys;
+ End;
 End.
