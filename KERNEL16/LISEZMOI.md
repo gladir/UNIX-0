@@ -18,12 +18,20 @@ de code répartis en segments, 31 Ko de données). Son interface suit celle de
 | `USR/PASSWD.PAS`, `USR/CRYPT.INC` | `/bin/passwd` (set-uid root) et le hachage des mots de passe |
 | `USR/PS.PAS`, `USR/KILL.PAS`, `USR/ID.PAS` | processus, signaux, identité |
 | `USR/MKDIR.PAS`, `USR/RMDIR.PAS`, `USR/RM.PAS` | répertoires et suppression |
-| `USR/INSTALL.PAS` | `/bin/install`, l'installation sur un disque dur depuis les disquettes ou le CD-ROM |
+| `USR/INSTALL.PAS` | `/bin/install`, l'installation sur un disque dur depuis les disquettes ou le CD-ROM (avec l'option réseau) |
+| `NET/NETIF.PAS` | réseau, couche de base (KNetIf) : interfaces, tampons de trames, file d'entrée, tampons des sockets, somme de contrôle, IRQ de la carte |
+| `NET/NE2000.PAS` | pilote NE2000/NE1000 (DP8390) : cartes ISA (port et IRQ détectés) et PCI (RTL8029, par le BIOS PCI) |
+| `NET/PKTDRV.PAS` | pilote de paquets (Packet Driver Specification, INT 60h-80h) : DEVENV, ROM d'amorce |
+| `NET/TCPIP.PAS` | ARP, IP, ICMP, UDP, routes (KInet), TCP (KTcp), sockets de 4.2BSD et configuration (KSock) |
+| `USR/NET.INC` | interface des sockets pour les programmes : appels, adresses, `/etc/hosts`, DNS |
+| `USR/IFCONFIG.PAS`, `ROUTE.PAS`, `NETSTAT.PAS`, `ARP.PAS` | configuration et état du réseau |
+| `USR/PING.PAS`, `HOST.PAS`, `DHCLIENT.PAS` | écho ICMP, résolution de noms, client DHCP |
+| `USR/NC.PAS`, `TELNET.PAS`, `FETCH.PAS`, `HTTPD.PAS`, `HOSTNAME.PAS` | netcat, client TELNET, client et serveur HTTP, nom de la machine |
 | `UFSBOOT.ASM` / `.BIN` | amorce UFS1 (8 Ko, dans la zone d'amorce de la partition UFS) : charge `/unix` à 1000:0000 |
 | `BOOTSECT.ASM` / `.BIN` | secteur d'amorce FAT12/FAT16 : charge le fichier `UNIX` à 1000:0000 |
 | `MBR.ASM` / `.BIN` | secteur de partition du disque dur |
 | `BUILD.SH` | construit le compilateur, le noyau, toutes les commandes et les images de `IMAGES/` |
-| `TESTS/` | tests sous QEMU (processus, systèmes de fichiers, session complète) et dans DEVENV |
+| `TESTS/` | tests sous QEMU (processus, systèmes de fichiers, session complète, réseau, installation) et dans DEVENV |
 
 ## Construction et essai
 
@@ -45,7 +53,11 @@ TSWAP : huit processus de 75 Ko qui ne tiennent qu'avec le va-et-vient),
 vérifie les systèmes de fichiers (`TOOLS/UFSCHK.PAS`, `fsck.vfat`), puis
 `SESSION.PY` ouvre une session complète par la console série : getty, login
 (mot de passe), commandes du shell, tubes, arrière-plan, ^C, permissions,
-`passwd`, connexion de root.
+`passwd`, connexion de root. `NET.PY` démarre le noyau réseau avec une
+carte NE2000 ISA puis PCI sur le réseau « user » de QEMU (DHCP, ping, `fetch`
+d'un serveur HTTP de l'hôte, `nc` dans les deux sens avec contrôle du
+contenu, écho UDP, `httpd` interrogé par l'hôte, `netstat`, `arp`) et
+`INSTALL.PY` installe le système, dont une fois avec la carte et DHCP.
 
 Dans l'IDE **DEVENV** (dépôt DEV-COOLS), UNIX-0 s'exécute dans un onglet
 « Émulateur 8086 » : dans l'Invite de commandes de l'IDE, `IMGMOUNT A:
@@ -63,6 +75,8 @@ les essais sous QEMU et DEVENV (`TESTS/*.PY`) demandent aussi `python3`.
 
 Compilation du noyau seul : `UPC /K KERNEL.PAS` produit `KERNEL.SYS`, image
 plate chargée à 1000:0000, copiée sous le nom `UNIX` sur le disque d'amorce.
+`UPC /K /DNET KERNEL.PAS` produit le noyau avec le réseau (fichiers inclus de
+`NET/`), installé sous le nom `/unixnet` (voir *Réseau*).
 
 ## Segments-unités
 
@@ -200,7 +214,8 @@ AX = numéro, arguments dans BX, CX, DX, SI, DI ; DS:DX = premier pointeur,
 ES:DI = second pointeur ; retour dans AX (DX:AX sur 32 bits, ou deux valeurs
 AX et DX comme `r0`/`r1` du PDP-11), CF = 1 et AX = errno en cas d'erreur.
 Les numéros 1 à 63 sont ceux de **UNIX V7**, les suivants ceux de **4.2BSD**,
-et 200 à 206 sont propres à UNIX-0. Un numéro inconnu envoie SIGSYS.
+et 200 à 206 sont propres à UNIX-0. Un numéro inconnu envoie SIGSYS (par
+exemple les appels des sockets sur le noyau sans réseau).
 
 | N° | Appel | N° | Appel | N° | Appel |
 |---|---|---|---|---|---|
@@ -225,6 +240,13 @@ et 200 à 206 sont propres à UNIX-0. Un numéro inconnu envoie SIGSYS.
 | 200 | procinfo (ps) | 201 | setdos (libc) | 202 | meminfo |
 | 203 | mountinfo | 204 | sigtramp (libc) | 205 | getcwd |
 | 206 | nap (ms) | | | | |
+| 87 | gethostname | 88 | sethostname | 97 | socket ¹ |
+| 98 | connect ¹ | 99 | accept ¹ | 104 | bind ¹ |
+| 105 | setsockopt ¹ | 106 | listen ¹ | 118 | getsockopt ¹ |
+| 125 | recvfrom ¹ | 133 | sendto ¹ | 134 | shutdown ¹ |
+| 141 | getpeername ¹ | 150 | getsockname ¹ | | |
+
+¹ noyau avec le réseau (`/unixnet`) seulement.
 
 Détails conformes à V7 :
 
@@ -233,7 +255,8 @@ Détails conformes à V7 :
   `core` écrit). BX = numéro d'un fils précis ou -1, CX = WNOHANG
   (extension).
 * **`errno`** : valeurs de V7 (EPERM = 1 … ERANGE = 34), puis de BSD
-  (ENAMETOOLONG = 63, ENOTEMPTY = 66, ENOSYS = 78).
+  (ENAMETOOLONG = 63, ENOTEMPTY = 66, ENOSYS = 78; réseau : EWOULDBLOCK =
+  35 … EHOSTUNREACH = 65, par exemple ECONNREFUSED = 61).
 * **`open`** : O_RDONLY, O_WRONLY, O_RDWR, puis les drapeaux de 4.2BSD
   O_NDELAY = 4, O_APPEND = 8, O_CREAT = 200h, O_TRUNC = 400h, O_EXCL = 800h ;
   le mode de création est filtré par `umask`.
@@ -323,7 +346,8 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
   écrits directement sur la disquette, sans système de fichiers ; chaque
   volume commence par un fichier `VOLUME` (« UNIX-0 numéro total »), aucun
   fichier n'est coupé entre deux volumes (`TOOLS/MKVOL.PAS`). Il en faut
-  **3**, soit **4 disquettes de 1,44 Mo** en tout ;
+  **4**, soit **5 disquettes de 1,44 Mo** en tout (la racine contient les
+  deux noyaux, `/unix` et `/unixnet`) ;
 * `UNIX0-CD.ISO` : CD-ROM ISO 9660 amorçable (El Torito, `TOOLS/MKISO.PAS`)
   en **émulation de disque dur** : le BIOS présente l'image du CD comme le
   disque 80h et le noyau la lit par l'INT 13h, sans pilote de CD-ROM ; elle
@@ -343,7 +367,12 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
    3. **FAT16 seul** : racine FAT16 (grappes de 512 octets ou plus, sans
       permissions UNIX), va-et-vient ;
 
-   et demande confirmation ; ce qui serait monté depuis le disque cible
+   puis le **réseau** : aucun, ou une des cartes que le noyau
+   d'installation (le noyau réseau) a détectées — sinon, au choix, NE2000
+   ou pilote de paquets —, le protocole **TCP/IP** par **DHCP** (par
+   défaut) ou une **adresse fixe** (adresse, masque, passerelle, serveur de
+   noms), le **nom de la machine** et le lancement de `httpd` au démarrage ;
+   enfin demande confirmation ; ce qui serait monté depuis le disque cible
    est démonté ;
 2. écrit la table des partitions (code de `/mdec/mbr`), alignées sur les
    cylindres du BIOS, avec un va-et-vient de 4 Mo (type 82h) ; le noyau
@@ -352,13 +381,18 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
    `newfs` : superbloc et copies, groupes de cylindres de 32 Mo au plus
    (cartes des inodes, des fragments et des grappes, résumés), tables
    d'inodes, racine (inode 2), amorce UFS ;
-4. monte la racine sur `/mnt` (et l'amorce FAT16 sur `/mnt/boot`), copie le
-   noyau, puis extrait les volumes : sur `/dev/fd0`, lu brut, en vidant le
+4. monte la racine sur `/mnt` (et l'amorce FAT16 sur `/mnt/boot`), puis
+   extrait les volumes : sur `/dev/fd0`, lu brut, en vidant le
    cache du lecteur à chaque disquette (`ioctl DIOCINVAL`), ou depuis
    `/dist/volN.tar` ; modes (bit set-uid de `passwd` compris),
    propriétaires et dates sont appliqués. Une disquette qui n'est pas la
-   bonne est refusée et redemandée ;
-5. démonte, puis propose de redémarrer.
+   bonne est refusée et redemandée. Sur une racine FAT16, un nom qui
+   n'entre pas dans le format 8.3 est signalé et ignoré ;
+5. met en place le noyau : `/unix`, ou `/unixnet` si une carte a été
+   choisie (copié dans `/boot` pour la disposition FAT16 + UFS), et écrit
+   `/etc/myname`, `/etc/rc`, `/etc/hosts`, et pour le réseau
+   `/etc/netstart` et `/etc/resolv.conf` ;
+6. démonte, puis propose de redémarrer.
 
 `ioctl` des disques (UNIX-0) : `DIOCGINFO` (taille, géométrie du BIOS,
 début, type de partition), `DIOCRESCAN` (relecture du MBR, aucune
@@ -403,6 +437,120 @@ le disque installé, s'y connecte et garde une capture (PNG et texte) de
 chaque étape (`DEVENV=…/devenv python3 TESTS/DEVENV_INSTALL.PY disquettes`
 ou `cd`).
 
+## Réseau
+
+Le réseau est dans un noyau à part, `/unixnet` (`UPC /K /DNET KERNEL.PAS`),
+compilé à partir de `KERNEL.PAS` et des fichiers inclus de `NET/`, comme un
+noyau BSD configuré avec ses pilotes : son code ajoute environ 84 Ko au
+noyau, que le noyau sans réseau (`/unix`) laisse aux processus. Le choix se
+fait à l'installation (carte réseau → `/unixnet` devient le noyau actif) ou à
+la main : `cp /unixnet /unix`.
+
+**Pilotes.** Au démarrage, le noyau cherche :
+
+* les cartes **NE2000 PCI** (Realtek RTL8029, 10EC:8029) par le BIOS PCI
+  (INT 1Ah, fonctions B1xxh en registres de 16 bits) : port et IRQ dans
+  l'espace de configuration ;
+* les cartes **NE2000/NE1000 ISA** aux ports 300h, 280h, 320h, 340h, 360h et
+  240h (remise à zéro, signature « WW » de la PROM, bus de 8 ou 16 bits) ;
+  l'IRQ est trouvée en faisant demander une interruption à la carte et en
+  lisant le registre IRR des 8259 (`ifconfig ne0 irq n` la corrige) ;
+* un **pilote de paquets** (spécification de FTP Software) déjà en mémoire
+  sur un vecteur 60h à 80h portant la signature « PKT DRVR » : interface
+  `pk0` (pilote d'une ROM d'amorce ou d'un émulateur ; voir plus bas pour
+  DEVENV) ;
+* et la **boucle locale** `lo0` (127.0.0.1).
+
+```
+ne0 : NE2000 ISA, port 300h, IRQ 3, 52:54:00:12:34:56
+ne0 : NE2000 PCI (RTL8029), port C000h, IRQ 11, 52:54:00:12:34:56
+```
+
+L'interruption de la carte ne fait que masquer sa ligne au 8259 et réveiller
+le processeur ; les trames sont lues et traitées par **NetIsr**, appelée par
+l'ordonnanceur hors interruption (comme le `netisr` de BSD : le noyau n'est
+jamais préempté en mode noyau, NetIsr ne rencontre donc jamais une structure
+à moitié modifiée). Sans IRQ, la carte est scrutée à chaque passage dans
+l'ordonnanceur et à chaque top d'horloge.
+
+**Mémoire.** Les tampons (7 trames de 1536 octets, la file du pilote de
+paquets, 8 sockets avec 1 Ko d'émission et 1 Ko de réception) occupent la
+mémoire basse de 00600h à 07FFFh : la pile du processus 0 et le secteur
+d'amorce, libres une fois `init` lancé. Le réseau ne prend donc rien à la
+mémoire des processus, au-delà de son code. Quand les tampons sont pleins,
+les trames restent dans l'anneau de 14 Ko de la carte.
+
+**Protocoles** (`NET/TCPIP.PAS`) :
+
+* **ARP** (RFC 826) : cache de 10 entrées (20 minutes), une trame en attente
+  par adresse, trois demandes au plus ;
+* **IP** (RFC 791) : table de routage (route la plus précise), pas de
+  fragmentation (les fragments reçus sont ignorés), pas de relais entre
+  interfaces ; une interface sans adresse accepte tout (DHCP) ;
+* **ICMP** (RFC 792) : réponse aux demandes d'écho, « port injoignable » ;
+* **UDP** (RFC 768) ; **sockets bruts** (le datagramme IP entier, comme
+  BSD, pour `ping`) ;
+* **TCP** (RFC 793) : ouvertures active et passive (file d'écoute de 4),
+  option MSS, fenêtre égale à la place libre du tampon de réception,
+  retransmission depuis le premier octet non acquitté avec délai doublé
+  (1 s, puis jusqu'à 64 s ; abandon après 12 essais, 6 pour le SYN), sondage
+  de fenêtre nulle, fermeture des deux côtés, TIME_WAIT de 4 s, RST pour les
+  segments sans destinataire. Les segments hors séquence sont ignorés (le
+  correspondant retransmet).
+
+**Sockets.** Les appels de 4.2BSD (tableau ci-dessus) : un socket est un
+descripteur (vnode de type socket) ; `read`, `write`, `close`, `dup`, `fork`
+et `exec` s'y appliquent. Familles et types : `AF_INET`, `SOCK_STREAM`
+(TCP), `SOCK_DGRAM` (UDP), `SOCK_RAW` (super-utilisateur). Options :
+`SO_REUSEADDR`, `SO_BROADCAST`, `SO_ERROR`, `FIONBIO` (non bloquant),
+`FIONREAD` ; ports < 1024 réservés au super-utilisateur ; `SIGPIPE` sur une
+connexion fermée. Registres : `socket(BX famille, CX type, DX protocole)`,
+`connect`/`bind(BX, DS:DX sockaddr_in)`, `listen(BX, CX)`, `accept(BX,
+DS:DX adresse ou 0:0)`, `sendto`/`recvfrom(BX, DS:DX tampon, CX longueur,
+SI drapeaux, ES:DI adresse ou 0:0)`, `setsockopt(BX, CX option, DX
+valeur)`, `getsockopt(BX, CX option)` → AX. La configuration passe par des
+`ioctl` sur un socket (`SIOCGIFINFO`, `SIOCSIFADDR`, `SIOCSIFFLAGS`,
+`SIOCADDRT`, `SIOCGARPENT`, `SIOCGSOCK`, `SIOCGNSTAT`, ... : `USR/NET.INC`).
+
+**Commandes** : `ifconfig`, `route`, `netstat` (-r, -i, -s), `arp`,
+`hostname`, `ping` (set-uid root), `host` (`/etc/hosts` puis DNS),
+`dhclient`, `nc` (client et serveur TCP ou UDP, `-e programme`), `telnet`,
+`fetch` (HTTP/1.0) et `httpd` (sert `/usr/www`). Ces commandes ne sont pas
+sur les disquettes de 1,44 et 2,88 Mo, dont le noyau est sans réseau.
+
+**Démarrage.** `init` exécute `/etc/rc` (nom de la machine, `/etc/myname`),
+puis `/etc/netstart`, écrit par l'installation : `dhclient ne0`, ou
+`ifconfig ne0 adresse netmask masque up` et `route add default passerelle`,
+éventuellement `httpd &`. `/etc/hosts` et `/etc/resolv.conf` donnent les
+noms.
+
+```
+# ifconfig ne0 10.0.2.15 netmask 255.255.255.0 up
+# route add default 10.0.2.2
+# ping -c 3 10.0.2.2
+# fetch http://10.0.2.2:8000/fichier.txt
+# nc -l 7 -e /bin/cat &
+```
+
+Sous QEMU (réseau « user », DHCP en 10.0.2.2) :
+
+```bash
+qemu-system-i386 -drive file=disque.img,format=raw,if=ide \
+  -netdev user,id=n0,hostfwd=tcp::8080-:80 -device ne2k_isa,netdev=n0,iobase=0x300,irq=3
+```
+
+(ou `-device ne2k_pci,netdev=n0`).
+
+Le pilote `pk0` a été essayé dans DEVENV (option « Réseau LAN », `DosLAN=1`
+dans `DEVENV.CFG` ; « WATTCP », `DosWatTcp=1`, donne la passerelle NAT
+192.168.200.1, sans DHCP : adresse fixe, par exemple 192.168.200.50) avec
+les corrections de la branche `claude/devenv-pilote-paquets-int60` de
+DEV-COOLS : avant elles, le vecteur INT 60h perdait la signature « PKT
+DRVR » au démarrage et les appels n'atteignaient pas l'émulation, et le
+retour des appels du récepteur ne rendait pas les registres de l'appelant.
+`pk0` est alors détectée, reçoit son adresse Ethernet, résout la passerelle
+par ARP et émet sans erreur.
+
 ## Carte mémoire
 
 | Adresses | Contenu |
@@ -411,6 +559,7 @@ ou `cd`).
 | 00400-004FF | données du BIOS |
 | 00500-07BFF | pile du processus 0 (amorce) |
 | 07C00-07DFF | secteur d'amorce (BPB relu par le noyau) |
+| 00600-07FFF | après l'amorce, noyau réseau : tampons des trames et des sockets |
 | 08000-0FFFF | cache disque (64 tampons de 512 octets) |
 | 10000-...   | noyau : code (segments), puis données |
 | ...-9FFFF   | images des processus (en bas) et piles noyau (en haut), gérées par la coremap ; les images en trop sont dans la zone de va-et-vient |
@@ -453,6 +602,12 @@ offre aussi l'interface UNIX directe : `SysOpen`, `SysRead`, `Fork`,
   par `mknod` (`/dev` est fourni par le noyau), date d'accès non tenue à
   jour, pas de fuseau horaire (l'horloge du PC est en UTC).
 * Fichiers de 16 Mo au plus sur UFS (indirection double).
+* Réseau : 8 sockets, tampons de 1 Ko par sens (fenêtre TCP de 1 Ko), pas de
+  fragmentation IP ni de file des segments TCP hors séquence, pas de
+  `select` (les programmes interactifs alternent socket non bloquant et
+  `FIONREAD`), pas de pseudo-terminal (donc pas de `telnetd`), une seule
+  carte avec IRQ (les autres sont scrutées), bail DHCP non renouvelé, pas
+  d'IPv6.
 * QEMU 8.2 exécute mal un saut proche 16 bits qui fait le tour des 64 Ko
   d'un segment non aligné sur 4 Ko ; pour les cibles UNIX-0, UPC limite donc
   les segments de code à 32 Ko (aucun saut ne fait le tour du segment).

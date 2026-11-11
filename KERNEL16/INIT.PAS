@@ -3,6 +3,10 @@
   @website(https://www.gladir.com/unix-0)
   @abstract(Target: Unix Pascal (UPC /X))
   @description: Processus init (pid 1) de UNIX-0, comme celui de UNIX V7 :
+   execute d'abord /etc/rc par /bin/sh (commandes du demarrage : nom de la
+   machine, ...), puis /etc/netstart s'il existe (reseau, ecrit par
+   l'installation), chacun apres la fin du precedent (un seul interpreteur
+   a la fois : la memoire d'un 8086 est comptee), puis
    lit /etc/ttys et lance /etc/getty sur chaque terminal actif, relance
    getty quand la session se termine et recupere les processus orphelins
    (zombies). Sans /etc/getty, lance directement /bin/sh sur la console.
@@ -79,9 +83,34 @@ Begin
  TtyPid[K]:=Pid;
 End;
 
+Procedure RunRc(Script:String);
+{ fichier de commandes sur la console, comme "sh /etc/rc" de UNIX V7 }
+Var Pid,Fd,W,St:Integer;
+Begin
+ If Not Exists(Script) Or Not Exists('/bin/sh') Then Exit;
+ Pid:=VFork;
+ If Pid=0 Then Begin
+  Fd:=SysOpen('/dev/console',O_RDWR,0);
+  If Fd>=0 Then Begin
+   SysDup2(Fd,0); SysDup2(Fd,1); SysDup2(Fd,2);
+   If Fd>2 Then SysClose(Fd);
+  End;
+  ArgReset; ArgAdd('sh'); ArgAdd(Script);
+  EnvAdd('HOME=/'); EnvAdd('PATH=/bin:/usr/bin');
+  ArgExec('/bin/sh');
+  SysExit(127);
+ End;
+ If Pid<0 Then Exit;
+ Repeat
+  W:=WaitPid(Pid,St,0);
+ Until (W=Pid) Or (W<0);
+End;
+
 BEGIN
  WriteLn('init : demarrage de UNIX-0');
  SysSignal(SIGINT,SIG_IGN); SysSignal(SIGQUIT,SIG_IGN);
+ RunRc('/etc/rc');
+ RunRc('/etc/netstart');
  Getty:=Exists('/etc/getty');
  ReadTtys;
  For I:=1 To NTty Do Spawn(I);

@@ -15,7 +15,10 @@
 #   8x8 de l'emulateur, lignes de 14 points), pour attendre chaque question
 #   de l'installateur; chaque etape est capturee (PNG et texte) dans le
 #   dossier de sortie. Le disque installe est verifie par TOOLS/UFSCHK.PAS.
-#   Usage : DEVENV=/chemin/devenv python3 DEVENV_INSTALL.PY [disquettes|cd]
+#   Mode reseau : DEVENV.CFG active l'option "Reseau LAN" (pilote de paquets
+#   INT 60h); l'installateur voit la carte pk0, qui recoit une adresse fixe
+#   sur le reseau NAT de DEVENV (192.168.200.50, passerelle 192.168.200.1).
+#   Usage : DEVENV=/chemin/devenv python3 DEVENV_INSTALL.PY [disquettes|cd|reseau]
 #           [dossier_de_sortie]
 #   Sous Linux : Xvfb, xdotool et ImageMagick (import) sont necessaires.
 import os, re, shutil, subprocess, sys, time
@@ -171,6 +174,9 @@ def main():
     with open(disk, 'wb') as f:
         f.truncate(64 * 1024 * 1024)
     bat = os.path.join(work, 'inst.bat')
+    if MODE == 'reseau':
+        # option "Reseau LAN" : pilote de paquets (INT 60h) au demarrage
+        open(os.path.join(work, 'DEVENV.CFG'), 'w').write('DosLAN=1\nDosWatTcp=1\n')
     if MODE == 'cd':
         lines = ['BOOT /CDROM:%s/UNIX0-CD.ISO' % work, 'IMGMOUNT D: %s' % disk]
     else:
@@ -189,6 +195,29 @@ def main():
         wait_for(r'^Choix \[1\] :')
         shot('type-installation')
         emulator('' if MODE != 'cd' else '2')   # UFS seul / FAT16 + UFS
+        # reseau : aucun, ou (mode reseau) la carte pk0 detectee (pilote de
+        # paquets de DEVENV), adresse fixe sur le reseau NAT de DEVENV
+        wait_for(r'^Choix \[\d\] :')
+        shot('reseau')
+        if MODE == 'reseau':
+            emulator('')
+            wait_for(r'^Choix \[1\] :')
+            emulator('2')
+            wait_for(r'^Adresse IP :')
+            emulator('192.168.200.50')
+            wait_for(r'^Masque')
+            emulator('')
+            wait_for(r'^Passerelle')
+            emulator('192.168.200.1')
+            wait_for(r'^Serveur de noms')
+            emulator('')
+        else:
+            emulator('')
+        wait_for(r'^Nom de la machine')
+        emulator('')
+        if MODE == 'reseau':
+            wait_for(r'httpd\) au demarrage')
+            emulator('non')
         wait_for(r'Continuer \? \(oui/non\)')
         emulator('oui')
         n = 2
@@ -227,10 +256,20 @@ def main():
         time.sleep(5)
         wait_for(r'^\$$', 300)
         shot('session-invite')
+        if MODE == 'reseau':
+            emulator('ifconfig pk0; netstat -r')
+            time.sleep(5)
+            wait_for(r'^\$$', 300)
+            shot('reseau-pk0')
+            net = '\n'.join(screen())
+            print('pk0 : ' + ('ok' if '192.168.200.50' in net and 'default' in net else 'ECHEC'))
+            boot += '\n' + net
         r = subprocess.run([UFSCHK, '--hd', disk],
                            capture_output=True, text=True)
         print('UFS1 du disque installe : ' + r.stdout.strip().splitlines()[-1])
         want = 'racine : /dev/hda1 (UFS' if MODE != 'cd' else 'racine : /dev/hda2 (UFS'
+        if MODE == 'reseau':
+            want = 'inet 192.168.200.50'
         print('amorce du disque installe : ' + ('ok' if want in boot else 'ECHEC (' + want + ')'))
         ok = r.returncode == 0 and want in boot
     except TimeoutError as e:

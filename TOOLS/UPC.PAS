@@ -142,7 +142,7 @@ Uses Dos;
 Const
  MaxSource = 1048576;
  MaxImage = 65520;
- MaxSymbols = 4096;
+ MaxSymbols = 8192;
  MaxFixups = 32768;
  MaxSegs = 32;           { segments de code au plus (mode multi-segments) }
  MaxCodeRefs = 8192;
@@ -13822,7 +13822,8 @@ Begin
   If MultiSeg Then Emit($CB) Else Emit($C3);
  End;
  If Token<>tkSegmentEnd Then Fail(36,'SegmentEnd attendu');
- NextToken; Need(tkSemi);
+ NextToken;
+ If Token<>tkSemi Then Need(tkSemi);
  Units[U].State:=2;
  If Units[U].HasInit Then Begin
   Inc(InitCount); InitOrder[InitCount]:=U
@@ -13834,6 +13835,10 @@ Begin
  AddImport(U);
  { la suite du programme ne partage pas le segment du segment-unite }
  If MultiSeg And (SegDepth=0) And (CodeSize>RuntimeEnd) Then SegNext;
+ { le jeton qui suit le ';' est lu dans la portee du programme : un
+   segment-unite peut ainsi occuper tout un fichier inclus ($I), dont la
+   fin est reconnue au niveau ou l'inclusion a commence }
+ NextToken;
 End;
 
 Procedure OpenBinaryRead(Var F: File; Var E: Integer);

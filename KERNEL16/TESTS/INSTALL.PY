@@ -7,7 +7,11 @@
 #      moniteur de QEMU a la demande de l'installateur) sur un disque vierge,
 #      installation par defaut (UFS seul, amorce UFS);
 #   2. depuis le CD-ROM (UNIX0-CD.ISO, El Torito) : FAT16 d'amorce + UFS,
-#      puis FAT16 seul, sur d'autres disques vierges.
+#      puis FAT16 seul, sur d'autres disques vierges;
+#   3. depuis le CD-ROM avec une carte NE2000 (QEMU ne2k_isa) : option
+#      reseau, TCP/IP par DHCP (reseau "user" de QEMU); le disque installe
+#      demarre avec le noyau /unixnet, /etc/netstart configure ne0 par
+#      dhclient et ping atteint la passerelle.
 #   Chaque disque installe est verifie (UFS1 par TOOLS/UFSCHK.PAS, FAT16 par
 #   fsck.vfat s'il est present), puis demarre seul : connexion de root et
 #   quelques commandes.
@@ -106,12 +110,34 @@ def check_disk(path, what):
                 print('      | ' + (r.stdout + r.stderr).strip().replace('\n', '\n      | '))
 
 
-def boot_installed(path, what, expect):
-    vm = Vm(['-drive', 'file=%s,format=raw,if=ide' % path, '-boot', 'c'])
+NIC = ['-netdev', 'user,id=n0', '-device', 'ne2k_isa,netdev=n0,iobase=0x300,irq=3']
+
+
+def answer_net(vm, card='', name=''):
+    # carte reseau (1 = aucune, ou la carte detectee par defaut), protocole
+    # (DHCP par defaut), nom de la machine, httpd au demarrage (non)
+    t = vm.expect(r'Choix \[\d\] : ', 60)
+    vm.send(card)
+    m = vm.expect(r'Choix \[1\] : |Nom de la machine \[unix0\] : ', 60)
+    if m.endswith('Choix [1] : '):
+        vm.send('')
+        vm.expect(r'Nom de la machine \[unix0\] : ', 60)
+    vm.send(name)
+    m = vm.expect(r'httpd\) au demarrage \? \(oui/non\) |Continuer \? \(oui/non\) ', 60)
+    if 'httpd' in m:
+        vm.send('non')
+        vm.expect(r'Continuer \? \(oui/non\) ', 60)
+    return t
+
+
+def boot_installed(path, what, expect, nic=False, net=False):
+    vm = Vm(['-drive', 'file=%s,format=raw,if=ide' % path, '-boot', 'c'] + (NIC if nic else []))
     try:
         boot = vm.expect(r'login: ', 120)
         ok(all(e in boot for e in expect),
            '%s : demarrage du disque dur (%s)' % (what, ', '.join(expect)))
+        if not all(e in boot for e in expect):
+            print('      | ' + boot.replace('\r', '')[-1500:].replace('\n', '\n      | '))
         vm.send('root')
         vm.expect(r'# $', 30)
         vm.send('ls /bin | wc -l; cat /etc/passwd | grep invite; ls -l /bin/passwd; ls /; id')
@@ -120,6 +146,11 @@ def boot_installed(path, what, expect):
         ok(n is not None and int(n.group(1)) >= 50 and 'invite:' in r and 'unix' in r
            and 'uid=0(root)' in r, '%s : commandes et fichiers installes (%s commandes)'
            % (what, n.group(1) if n else '?'))
+        if net:
+            vm.send('hostname; ping -c 2 10.0.2.2')
+            r = vm.expect(r'(?m)^# $', 60).replace('\r', '')
+            ok('2 recus' in r and 'machine0' in r,
+               '%s : nom de la machine et ping de la passerelle' % what)
     except TimeoutError as e:
         ok(False, '%s : %s' % (what, e))
     finally:
@@ -146,7 +177,7 @@ def install_floppy():
         vm.send('install')
         vm.expect(r'Choix \[1\] : ', 60)
         vm.send('')                       # installation par defaut : UFS seul
-        vm.expect(r'Continuer \? \(oui/non\) ', 60)
+        answer_net(vm)                    # pas de reseau, nom par defaut
         vm.send('oui')
         changes = 0
         while True:
@@ -177,12 +208,13 @@ def install_floppy():
                                           'va-et-vient : /dev/hda2'])
 
 
-def install_cd(layout, size, expect, what):
-    target = os.path.join(TMP, 'disque%d.img' % (layout + 1))
+def install_cd(layout, size, expect, what, nic=False):
+    target = os.path.join(TMP, 'disque%d%s.img' % (layout + 1, 'n' if nic else ''))
     with open(target, 'wb') as f:
         f.truncate(size * 1024 * 1024)
     vm = Vm(['-cdrom', os.path.join(IMG, 'UNIX0-CD.ISO'),
-             '-drive', 'file=%s,format=raw,if=ide,index=0' % target, '-boot', 'd'])
+             '-drive', 'file=%s,format=raw,if=ide,index=0' % target, '-boot', 'd'] +
+            (NIC if nic else []))
     try:
         vm.expect(r'"install"', 120)
         vm.expect(r'login: ', 30)
@@ -190,7 +222,11 @@ def install_cd(layout, size, expect, what):
         t = vm.expect(r'Choix \[1\] : ', 60)
         ok('/dev/hdb' in t and 'CD-ROM' in t, '%s : disque cible /dev/hdb (le CD est hda)' % what)
         vm.send(str(layout))
-        vm.expect(r'Continuer \? \(oui/non\) ', 60)
+        if nic:
+            t = answer_net(vm, '', 'machine0')   # carte detectee (ne0), DHCP
+            ok('ne0 : NE2000 ISA' in t, '%s : carte NE2000 detectee par l\'installateur' % what)
+        else:
+            answer_net(vm)
         vm.send('oui')
         vm.expect(r'Redemarrer maintenant \? \(oui/non\) ', 900)
         ok('Installation terminee' in vm.log, '%s : installation terminee' % what)
@@ -202,7 +238,7 @@ def install_cd(layout, size, expect, what):
     finally:
         vm.close()
     check_disk(target, what)
-    boot_installed(target, what, expect)
+    boot_installed(target, what, expect, nic, nic)
 
 
 MODE = os.environ.get('INSTALL_MODE', 'disquettes cd')
@@ -216,6 +252,10 @@ if 'cd' in MODE:
     print('== Installation depuis le CD-ROM : FAT16 seul')
     install_cd(3, 48, ['racine : /dev/hda1 (FAT16', 'va-et-vient : /dev/hda2'],
                'CD-ROM, FAT16 seul')
+if 'reseau' in MODE or 'cd' in MODE:
+    print('== Installation depuis le CD-ROM : UFS seul, carte NE2000, DHCP')
+    install_cd(1, 48, ['reseau TCP/IP', 'ne0 : NE2000 ISA', 'racine : /dev/hda1 (UFS',
+                       'dhclient : ne0 : 10.0.2.15'], 'CD-ROM, reseau', True)
 shutil.rmtree(TMP)
 print('Installation : %d echec(s)' % fails)
 sys.exit(1 if fails else 0)

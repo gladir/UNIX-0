@@ -4,9 +4,13 @@
   @abstract(Target: Unix Pascal (UPC /K))
   @description: Noyau UNIX-0 16 bits (IBM PC, 8086/8088, mode reel).
 
-  Compilation (un seul fichier, une seule image) :
+  Compilation (une seule image) :
     UPC /K KERNEL.PAS      -> KERNEL.SYS, copie sous le nom UNIX a la racine
-                              du disque d'amorce (voir KERNEL16/BUILD.SH).
+                              du disque d'amorce (voir KERNEL16/BUILD.SH);
+    UPC /K /DNET KERNEL.PAS -> noyau avec le reseau (fichiers inclus de
+                              KERNEL16/NET), installe sous le nom /unixnet
+                              (et comme /unix si l'installation configure
+                              une carte reseau).
 
   Le noyau est monolithique et ecrit dans un seul fichier source, decoupe en
   segments-unites (SegmentUnit) de Unix Pascal : chaque segment-unite a sa
@@ -35,7 +39,11 @@
      cache de secteurs a ecriture differee (sync, toutes les 30 secondes);
    - console : ecran et clavier du BIOS, recopie sur COM1, discipline de
      ligne de V7 (RAW, CBREAK, ECHO, CRMOD; ^C = SIGINT, ^\ = SIGQUIT,
-     ^D = fin de fichier).
+     ^D = fin de fichier);
+   - reseau (symbole NET; fichiers inclus de KERNEL16/NET) : pilotes
+     NE2000 (ISA, PCI) et pilote de paquets (INT 60h), boucle locale, ARP,
+     IP, ICMP, UDP, TCP et sockets de 4.2BSD (NETIF.PAS, NE2000.PAS,
+     PKTDRV.PAS, TCPIP.PAS).
 
   Carte memoire :
    00000-003FF vecteurs d'interruption  00400-004FF donnees du BIOS
@@ -75,7 +83,7 @@ Const
  PFREE=0; PRUN=1; PSLEEP=2; PZOMB=3;
 
  { types de vnode }
- VNON=0; VREG=1; VDIR=2; VCHR=3; VFIFO=4;
+ VNON=0; VREG=1; VDIR=2; VCHR=3; VFIFO=4; VSOCK=5;
 
  { systemes de fichiers }
  FSNONE=0; FSFAT12=1; FSFAT16=2; FSUFS=3; FSDEV=4;
@@ -88,6 +96,7 @@ Const
 
  { modes }
  S_IFMT=$F000; S_IFDIR=$4000; S_IFCHR=$2000; S_IFREG=$8000; S_IFIFO=$1000;
+ S_IFSOCK=$C000;
 
  { open }
  O_RDONLY=0; O_WRONLY=1; O_RDWR=2; O_ACCMODE=3; O_NDELAY=4; O_APPEND=8;
@@ -229,6 +238,7 @@ Var
  SysHook, PreemptHook, FaultHook: Pointer;
  ZeroBuf: Array[0..511] Of Byte;
  SysCtxOfs, SysCtxLen: Word;   { contexte de l'appel systeme (KSys) }
+ HostName: String[31];          { nom de la machine (gethostname, uname) }
 
 SegmentImplementation
 SegmentEnd;
@@ -739,6 +749,7 @@ Var
  BreakFlag: Boolean;           { Ctrl+Break }
  IdleHook: Pointer;            { scrutation du terminal (KTty) }
  SyncHook: Pointer;            { ecriture des tampons modifies (KDisk) }
+ NetHook: Pointer;             { reseau : cartes, trames recues (KSock) }
  ResidentHook: Pointer;        { mise en memoire d'un processus (KSwap) }
  ResArg: Integer;              { argument et resultat de ResidentHook }
  ResOk: Boolean;
@@ -1053,6 +1064,14 @@ Asm
 @Fin:
 End;
 
+Procedure CallNetHook; Assembler;
+Asm
+ CMP WORD PTR NetHook+2,0
+ JE @Fin
+ CALL DWORD PTR NetHook
+@Fin:
+End;
+
 Var
  LastDecay, LastSync: Longint;
 
@@ -1102,6 +1121,7 @@ Begin
  RunRun:=False; Skip:=0;
  Repeat
   CallIdleHook;
+  CallNetHook;
   CheckTimers;
   N:=-1; I:=Cur; Best:=MaxInt;
   For K:=1 To NPROC-1 Do Begin
@@ -1959,6 +1979,16 @@ Begin
 End;
 
 SegmentEnd;
+
+{ ====================================================================== }
+{ Reseau : fichiers inclus (segments-unites KNetIf, KNe2000, KPktDrv,     }
+{ KInet, KTcp et KSock).                                                  }
+{$IFDEF NET}
+{$I NET/NETIF.PAS}
+{$I NET/NE2000.PAS}
+{$I NET/PKTDRV.PAS}
+{$I NET/TCPIP.PAS}
+{$ENDIF}
 
 { ====================================================================== }
 SegmentUnit KFat;
@@ -3487,7 +3517,7 @@ SegmentEnd;
 SegmentUnit KVfs;
 { Systeme de fichiers virtuel : table des vnodes, resolution des chemins
   (namei), table des montages, fichiers ouverts, /dev et tubes. }
-Uses KTypes,KLib,KSched,KDisk,KTty,KFat,KUfs;
+Uses KTypes,KLib,KSched,KDisk,KTty,KFat,KUfs{$IFDEF NET},KSock{$ENDIF};
 SegmentInterface
 
 Var
@@ -3559,7 +3589,7 @@ Begin
  F:=0;
  For I:=1 To NVNODE Do
   If VNodes[I].Ref>0 Then Begin
-   If (T.Typ<>VFIFO) And (VNodes[I].Typ=T.Typ) And (VNodes[I].Mnt=T.Mnt) And
+   If (T.Typ<>VFIFO) And (T.Typ<>VSOCK) And (VNodes[I].Typ=T.Typ) And (VNodes[I].Mnt=T.Mnt) And
      (VNodes[I].Ino=T.Ino) Then Begin
     Inc(VNodes[I].Ref); VGet:=I; Exit;
    End;
@@ -3781,6 +3811,9 @@ Begin
   Wakeup(CHPIPE+P);
   If (PipeReaders[P]=0) And (PipeWriters[P]=0) Then PipeUsed[P]:=False;
  End;
+{$IFDEF NET}
+ If (V>0) And (VNodes[V].Typ=VSOCK) Then SoClose(VNodes[V].Minor);
+{$ENDIF}
  VPut(V);
 End;
 
@@ -3874,6 +3907,9 @@ Function VRead(Vn: Integer; Off: Longint; Sg, Os, N: Word): Integer;
 Begin
  Case VNodes[Vn].Typ Of
   VFIFO: VRead:=PipeRead(VNodes[Vn].Minor,Sg,Os,N);
+{$IFDEF NET}
+  VSOCK: VRead:=SoRecv(VNodes[Vn].Minor,Sg,Os,N,0,0);
+{$ENDIF}
   VCHR: VRead:=DevRW(VNodes[Vn].Minor,Off,Sg,Os,N,False);
   VDIR: VRead:=-EISDIR;
   Else Case FsType(Vn) Of
@@ -3888,6 +3924,9 @@ Function VWrite(Vn: Integer; Off: Longint; Sg, Os, N: Word): Integer;
 Begin
  Case VNodes[Vn].Typ Of
   VFIFO: VWrite:=PipeWrite(VNodes[Vn].Minor,Sg,Os,N);
+{$IFDEF NET}
+  VSOCK: VWrite:=SoSend(VNodes[Vn].Minor,Sg,Os,N,0,0);
+{$ENDIF}
   VCHR: VWrite:=DevRW(VNodes[Vn].Minor,Off,Sg,Os,N,True);
   VDIR: VWrite:=-EISDIR;
   Else Case FsType(Vn) Of
@@ -4689,7 +4728,7 @@ SegmentEnd;
 { ====================================================================== }
 SegmentUnit KSys;
 { Appels systeme (INT 80h) : lecture de la trame, aiguillage, retour. }
-Uses KTypes,KLib,KMem,KSched,KDisk,KSwap,KTty,KVfs,KProc;
+Uses KTypes,KLib,KMem,KSched,KDisk,KSwap,KTty,KVfs,KProc{$IFDEF NET},KNetIf,KInet,KSock{$ENDIF};
 SegmentInterface
 
 Procedure KSysInit;
@@ -5071,8 +5110,17 @@ Begin
   SysIoctl:=DiskIoctl(VNodes[Vn].Minor-DEVDISK);
   Exit;
  End;
+{$IFDEF NET}
+ If (VNodes[Vn].Typ=VSOCK) And (C.RCX<>FIONREAD) Then Begin
+  SysIoctl:=SoIoctl(VNodes[Vn].Minor,C.RCX,C.RDS,C.RDX,Suser);
+  Exit;
+ End;
+{$ENDIF}
  If C.RCX=FIONREAD Then Begin
   If IsTty Then N:=TtyAvail
+{$IFDEF NET}
+  Else If VNodes[Vn].Typ=VSOCK Then N:=SoAvail(VNodes[Vn].Minor)
+{$ENDIF}
   Else If VNodes[Vn].Typ=VFIFO Then N:=PipeCount[VNodes[Vn].Minor]
   Else If VNodes[Vn].Typ=VREG Then N:=VNodes[Vn].Size-Files[F].Off
   Else N:=0;
@@ -5107,6 +5155,113 @@ Begin
  If Length(S)>Max Then S[0]:=Chr(Max);
  For I:=0 To Length(S) Do Mem[Sg:Os+I]:=Ord(S[I]);
 End;
+
+Function FarPStr(Sg, Os: Word; Max: Integer): String;
+{ chaine Pascal (octet de longueur) de la memoire du processus }
+Var S: String; I,L: Integer;
+Begin
+ L:=Mem[Sg:Os]; If L>Max Then L:=Max;
+ S:='';
+ For I:=1 To L Do S:=S+Chr(Mem[Sg:Os+I]);
+ FarPStr:=S;
+End;
+
+{$IFDEF NET}
+{ --- sockets (numeros d'appels de 4.2BSD) -------------------------------
+  socket(BX famille, CX type, DX protocole); connect, bind (BX, DS:DX
+  sockaddr_in); listen (BX, CX file); accept (BX, DS:DX adresse ou 0:0);
+  sendto, recvfrom (BX, DS:DX tampon, CX longueur, SI drapeaux, ES:DI
+  adresse ou 0:0); shutdown (BX, CX); setsockopt (BX, CX option, DX
+  valeur), getsockopt (BX, CX option -> AX); getpeername, getsockname
+  (BX, DS:DX). }
+
+Function GetSock(Fd: Word; Var S: Integer): Integer;
+Var F: Integer;
+Begin
+ GetSock:=GetFile(Fd,F);
+ If F=0 Then Exit;
+ If VNodes[Files[F].Vn].Typ<>VSOCK Then Begin GetSock:=ENOTSOCK; Exit End;
+ S:=VNodes[Files[F].Vn].Minor;
+End;
+
+Function SockFd(S: Integer): Integer;
+{ descripteur (C.Ret) sur le socket S; en cas d'echec le socket est ferme }
+Var T: TVNode; V,F,Fd: Integer;
+Begin
+ FillChar(T,SizeOf(T),0);
+ T.Typ:=VSOCK; T.Minor:=S; T.Ino:=$7F00+S; T.Mode:=S_IFSOCK Or $1B6;
+ T.NLink:=1; T.MTime:=KTime; T.Uid:=Procs[Cur].Uid; T.Gid:=Procs[Cur].Gid;
+ SockFd:=ENFILE;
+ V:=VGet(T);
+ If V=0 Then Begin SoClose(S); Exit End;
+ F:=FAlloc(V,O_RDWR);
+ If F=0 Then Begin VPut(V); SoClose(S); Exit End;
+ Fd:=NewFd(F);
+ If Fd<0 Then Begin FClose(F); SockFd:=EMFILE; Exit End;
+ C.Ret:=Fd; SockFd:=0;
+End;
+
+Function SysSocket: Integer;
+Var S,E: Integer;
+Begin
+ If C.RBX<>AF_INET Then Begin SysSocket:=EAFNOSUPPORT; Exit End;
+ If (C.RCX=SOCK_RAW) And Not Suser Then Begin SysSocket:=EACCES; Exit End;
+ E:=SoCreate(C.RCX,C.RDX,S);
+ If E=0 Then E:=SockFd(S);
+ SysSocket:=E;
+End;
+
+Function SysSockOp(N: Word): Integer;
+Var S,E: Integer;
+Begin
+ E:=GetSock(C.RBX,S);
+ If E=0 Then
+  Case N Of
+   98: E:=SoConnect(S,C.RDS,C.RDX);
+   104: E:=SoBind(S,C.RDS,C.RDX);
+   106: E:=SoListen(S,C.RCX);
+   134: E:=SoShutdown(S,C.RCX);
+   141: E:=SoName(S,True,C.RDS,C.RDX);
+   150: E:=SoName(S,False,C.RDS,C.RDX);
+  End;
+ SysSockOp:=E;
+End;
+
+Function SysAccept: Integer;
+Var S,NS,E: Integer;
+Begin
+ E:=GetSock(C.RBX,S);
+ If E=0 Then E:=SoAccept(S,NS);
+ If E=0 Then Begin
+  If (C.RDS<>0) Or (C.RDX<>0) Then SoName(NS,True,C.RDS,C.RDX);
+  E:=SockFd(NS);
+ End;
+ SysAccept:=E;
+End;
+
+Function SysSockOpt(SetOpt: Boolean): Integer;
+Var S,E: Integer; W: Word;
+Begin
+ E:=GetSock(C.RBX,S);
+ If E=0 Then
+  If SetOpt Then E:=SoSetOpt(S,C.RCX,C.RDX)
+  Else Begin E:=SoGetOpt(S,C.RCX,W); C.Ret:=W End;
+ SysSockOpt:=E;
+End;
+
+Function SysSendRecv(Send: Boolean): Integer;
+Var S,E,N: Integer;
+Begin
+ E:=GetSock(C.RBX,S);
+ If E=0 Then Begin
+  If Send Then N:=SoSend(S,C.RDS,C.RDX,C.RCX,C.RES,C.RDI)
+  Else N:=SoRecv(S,C.RDS,C.RDX,C.RCX,C.RES,C.RDI);
+  If N<0 Then E:=-N Else C.Ret:=N;
+ End;
+ SysSendRecv:=E;
+End;
+
+{$ENDIF}
 
 Function SysProcInfo: Integer;
 Var P: Integer;
@@ -5367,7 +5522,7 @@ Begin
   57: Begin
        { uname : 5 champs de 16 octets (chaines Pascal) }
        PutPStr(C.RDS,C.RDX,'UNIX-0',15);
-       PutPStr(C.RDS,C.RDX+16,'unix0',15);
+       PutPStr(C.RDS,C.RDX+16,HostName,15);
        PutPStr(C.RDS,C.RDX+32,KVersion,15);
        PutPStr(C.RDS,C.RDX+48,'2026',15);
        PutPStr(C.RDS,C.RDX+64,'i8086',15);
@@ -5375,7 +5530,18 @@ Begin
   59: E:=SysExec(True);
   60: Begin C.Ret:=Procs[Cur].Umask; Procs[Cur].Umask:=C.RBX And $1FF End;
   66: Begin C.Ret:=DoVFork; If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End End;
+  87: PutPStr(C.RDS,C.RDX,HostName,31);
+  88: If Not Suser Then E:=EPERM Else Begin
+       HostName:=FarPStr(C.RDS,C.RDX,31);
+      End;
   90: E:=SysDup2(C.RBX,C.RCX);
+{$IFDEF NET}
+  97: E:=SysSocket;
+  98,104,106,134,141,150: E:=SysSockOp(C.RAX);
+  99: E:=SysAccept;
+  105,118: E:=SysSockOpt(C.RAX=105);
+  125,133: E:=SysSendRecv(C.RAX=133);
+{$ENDIF}
   128: E:=SysRename(False);
   156: E:=SysGetDirEntries;
   200: E:=SysProcInfo;
@@ -5577,6 +5743,7 @@ Var
  Root,Boot: String;
 
 BEGIN
+ HostName:='unix0';
  { le processus 0 (amorce) s'execute en mode noyau : l'horloge ne doit
    jamais le preempter, meme apres l'activation de l'ordonnanceur }
  InKernel:=1;
@@ -5587,7 +5754,11 @@ BEGIN
  ConPage:=Mem[$40:$62];
  SerialInit;
  KPrintLn('');
- KPrintLn('UNIX-0 version '+KVersion+' (noyau 16 bits pour IBM PC 8086)');
+ KPrintLn('UNIX-0 version '+KVersion+' (noyau 16 bits pour IBM PC 8086'
+{$IFDEF NET}
+   +', reseau TCP/IP'
+{$ENDIF}
+   +')');
  BootTime:=ReadRTC;
  MemTop:=MemW[$40:$13]*64;
  { fin des donnees du noyau : les longueurs des donnees stockees et du BSS
@@ -5612,6 +5783,11 @@ BEGIN
  DiskInit;
  ProbeDisks;
  ShowDisks;
+{$IFDEF NET}
+ { reseau : cartes presentes (les tampons sont reserves a la premiere
+   utilisation : ifconfig, socket) }
+ NetInit;
+{$ENDIF}
  { va-et-vient : premiere partition de type 82h. Les piles noyau sont
    alors reservees des maintenant, en haut de la memoire : une image qui
    revient de la zone doit pouvoir retrouver son adresse, et une pile noyau
@@ -5629,6 +5805,9 @@ BEGIN
  SysHook:=@SysDispatch; PreemptHook:=@PreemptEntry; FaultHook:=@FaultEntry;
  KSysInit; TtyInit;
  IdleHook:=@TtyPoll; SyncHook:=@BSync;
+{$IFDEF NET}
+ NetHook:=@NetIsr;
+{$ENDIF}
  OldInt08:=GetVector($08); OldInt1B:=GetVector($1B);
  SetVector($80,Seg(Int80Stub),Ofs(Int80Stub));
  SetVector($00,Seg(Int00Stub),Ofs(Int00Stub));

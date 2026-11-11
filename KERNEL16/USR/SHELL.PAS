@@ -773,6 +773,7 @@ Function RunPipeline(A,B:Integer;Bg:Boolean):Integer;
 Var
  N,K,J,S,Pid,PIn,Fd0,Fd1,W,St,Left,Save,LastSt:Integer;
  Pids:Array[1..8]Of Integer;
+ SaveFd:Array[0..2]Of Integer;
 Begin
  RunPipeline:=0;
  Save:=NWords; N:=0; S:=A;
@@ -787,7 +788,17 @@ Begin
   End;
  If (N=1)And Not Bg Then Begin
   If IsBuiltin(Cmds[1]) Then Begin
-   RunPipeline:=Builtin(Cmds[1]); NWords:=Save; Exit;
+   { redirections d'une commande interne (read NOM < fichier) : les
+     descripteurs 0, 1 et 2 sont sauves puis retablis }
+   If ((Cmds[1].InF<>'')Or(Cmds[1].OutF<>'')Or(Cmds[1].ErrF<>'')Or Cmds[1].ErrOut)And
+     (Words[Cmds[1].WFirst]<>'exec') Then Begin
+    For K:=0 To 2 Do SaveFd[K]:=SysDup(K);
+    If Redirect(Cmds[1]) Then RunPipeline:=Builtin(Cmds[1]) Else RunPipeline:=1;
+    For K:=0 To 2 Do If SaveFd[K]>=0 Then Begin
+     SysDup2(SaveFd[K],K); SysClose(SaveFd[K]);
+    End;
+   End Else RunPipeline:=Builtin(Cmds[1]);
+   NWords:=Save; Exit;
   End;
   If (Cmds[1].WCount=0)And(Cmds[1].ACount>0) Then Begin
    { NOM=valeur seul : variable de l'interpreteur }
