@@ -4,8 +4,9 @@
 # @website(https://www.gladir.com/unix-0)
 # @description: Essai de UNIX-0 dans l'emulateur 8086 de DEVENV (depot
 #   DEV-COOLS), en mode banc d'essai sans interface (/KERNELTEST,
-#   /KTBOOTIMG) : amorcage de la disquette et du disque dur de IMAGES/, puis
-#   commandes tapees dans l'interpreteur et verification de l'ecran.
+#   /KTBOOTIMG) : amorcage de la disquette et du disque dur de IMAGES/,
+#   connexion de root a l'invite de getty, commandes tapees dans le shell et
+#   verification de l'ecran.
 #   Usage : DEVENV=/chemin/devenv KERNEL16/TESTS/DEVENV.SH
 #   Sous Linux, devenv se construit avec DEV-COOLS/OSSPAS_TESTS/
 #   devenv_linux_build.py (Free Pascal, unites ptc/graph, X11) et s'execute
@@ -18,13 +19,13 @@ DEVENV=${DEVENV:?definir DEVENV (executable de DEVENV)}
 T=$(mktemp -d); mkdir -p "$T/kt"
 cat > "$T/script.txt" <<'EOS'
 run 150000000
-type ls
-run 40000000
-type cat /etc/motd
-run 40000000
-type cd /bin
-run 20000000
-type exec uname -o
+type root
+run 120000000
+type ls /etc
+run 60000000
+type echo $HOME $USER; id
+run 80000000
+type uname -o | cat
 run 80000000
 screen
 EOS
@@ -34,7 +35,8 @@ for img in UNIX0-144 UNIX0-HD; do
   ( cd "$T" && timeout 900 xvfb-run -a "$DEVENV" /KERNELTEST,kt /KTBOOTIMG:$img.img \
       /KTSCRIPT:script.txt /KTSTEPS:900000000 ) > "$T/$img.out" 2>&1
   sed -n '/ECRAN/,/^+----$/p' "$T/$img.out" | tail -14
-  if grep -q "UNIX-0$\||UNIX-0 *$" "$T/$img.out" && grep -q "Bienvenue sous UNIX-0" "$T/$img.out"; then
+  if grep -q "^|UNIX-0 *|*$\||UNIX-0 *$" "$T/$img.out" && grep -q "Bienvenue sous UNIX-0" "$T/$img.out" &&
+     grep -q "uid=0(root)" "$T/$img.out"; then
     echo "OK $img (DEVENV)"
   else echo "ECHEC $img (DEVENV)"; fail=1; fi
 done

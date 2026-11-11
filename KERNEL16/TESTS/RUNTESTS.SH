@@ -6,7 +6,8 @@
 #   chaque programme de test est installe comme /etc/init sur une copie du
 #   disque dur, la console serie (COM1) est recueillie, puis les systemes de
 #   fichiers sont verifies : UFS1 par TOOLS/UFSCHK.PY, FAT16 par fsck.vfat
-#   (paquet dosfstools), s'il est present.
+#   (paquet dosfstools), s'il est present; enfin TESTS/SESSION.PY ouvre une
+#   session complete (getty, login, sh) par la console serie.
 #   Usage : KERNEL16/TESTS/RUNTESTS.SH   (W = repertoire de BUILD.SH)
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -41,4 +42,10 @@ import struct;d=open('$T/$t.img','rb').read(512);print(struct.unpack_from('<I',d
     fi
   fi
 done
+# session complete : getty, login, sh (console serie)
+echo "== Session (getty, login, sh)"
+python3 "$HERE/SESSION.PY" "$ROOT/IMAGES/UNIX0-HD.IMG" > "$T/session.out" 2>&1 || fail=1
+grep -c "^ok" "$T/session.out" | sed 's/^/controles reussis : /'
+grep "^ECHEC" "$T/session.out"
+tail -1 "$T/session.out"
 [ $fail = 0 ] && echo "Tous les tests passent." || { echo "Des tests echouent."; exit 1; }

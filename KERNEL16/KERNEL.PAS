@@ -61,7 +61,7 @@ Const
  KSTKPARAS=256;     { pile noyau : 4 Ko par processus }
  KSTKTOP=KSTKPARAS*16;
  QUANTUM=3;         { tops d'horloge par tranche de temps }
- DEFHEAP=1024;      { tas par defaut d'un programme (paragraphes, 16 Ko) }
+ DEFHEAP=256;       { tas initial par defaut (paragraphes, 4 Ko; break ensuite) }
 
  { etats des processus }
  PFREE=0; PRUN=1; PSLEEP=2; PZOMB=3;
@@ -82,19 +82,23 @@ Const
  S_IFMT=$F000; S_IFDIR=$4000; S_IFCHR=$2000; S_IFREG=$8000; S_IFIFO=$1000;
 
  { open }
- O_RDONLY=0; O_WRONLY=1; O_RDWR=2; O_ACCMODE=3; O_CREAT=$40; O_EXCL=$80;
- O_TRUNC=$200; O_APPEND=$400;
+ O_RDONLY=0; O_WRONLY=1; O_RDWR=2; O_ACCMODE=3; O_NDELAY=4; O_APPEND=8;
+ O_CREAT=$200; O_TRUNC=$400; O_EXCL=$800;   { valeurs de 4.2BSD }
 
  { signaux }
- SIGHUP=1; SIGINT=2; SIGQUIT=3; SIGILL=4; SIGFPE=8; SIGKILL=9; SIGSEGV=11;
- SIGPIPE=13; SIGALRM=14; SIGTERM=15; SIGCHLD=17; SIGSYS=31;
+ { signaux (numeros de UNIX V7) }
+ SIGHUP=1; SIGINT=2; SIGQUIT=3; SIGILL=4; SIGTRAP=5; SIGIOT=6; SIGEMT=7;
+ SIGFPE=8; SIGKILL=9; SIGBUS=10; SIGSEGV=11; SIGSYS=12; SIGPIPE=13;
+ SIGALRM=14; SIGTERM=15; NSIG=16;
 
  { codes d'erreur }
  EPERM=1; ENOENT=2; ESRCH=3; EINTR=4; EIO=5; ENXIO=6; E2BIG=7; ENOEXEC=8;
  EBADF=9; ECHILD=10; EAGAIN=11; ENOMEM=12; EACCES=13; EFAULT=14; EBUSY=16;
  EEXIST=17; EXDEV=18; ENODEV=19; ENOTDIR=20; EISDIR=21; EINVAL=22;
  ENFILE=23; EMFILE=24; ENOTTY=25; EFBIG=27; ENOSPC=28; ESPIPE=29;
- EROFS=30; EPIPE=32; ERANGE=34; ENAMETOOLONG=36; ENOSYS=38; ENOTEMPTY=39;
+ EROFS=30; EMLINK=31; EPIPE=32; EDOM=33; ERANGE=34;
+ { au-dela de V7 : valeurs de BSD }
+ ENAMETOOLONG=63; ENOTEMPTY=66; ENOSYS=78;
 
 Type
  TPath=String[127];
@@ -115,8 +119,16 @@ Type
   Size: Word;          { taille en paragraphes }
   PSP: Word;           { prefixe du programme }
   DosOfs, DosSeg: Word;{ point d'entree libc pour INT 21h }
-  Status: Word;        { code de sortie (octet bas) et signal (octet haut) }
+  Status: Word;        { etat de wait : code de sortie * 256 + signal }
   SigPend, SigIgn: Word;
+  SigH: Array[1..NSIG-1] Of Longint;  { gestionnaires (0 = SIG_DFL) }
+  SigTramp: Longint;   { trampoline de la libc pour les gestionnaires }
+  Alarm: Longint;      { top d'horloge de SIGALRM (0 = aucune alarme) }
+  Uid, Gid: Word;      { utilisateur et groupe }
+  Umask: Word;
+  Nice: Integer;
+  ChildTicks: Longint; { temps processeur des fils attendus (times) }
+  ArgPtr: Longint;     { argc/argv/envp sur la pile (exec) }
   Borrowed: Boolean;   { vfork : la memoire est celle du pere }
   RawKbd: Boolean;     { a mis le terminal en mode brut : ^C est une donnee }
   SysCtx: Array[0..31] Of Byte;  { contexte de l'appel systeme en cours }
@@ -141,6 +153,7 @@ Type
   DirIdx: Word;        { FAT : entree dans le secteur }
   Minor: Word;         { peripherique ou numero de tube }
   CIdx, CClus: Longint;{ FAT : dernier cluster parcouru (index, numero) }
+  Uid, Gid: Word;      { proprietaire (UFS; 0 sur FAT et /dev) }
  End;
 
  TFile=Record
@@ -546,6 +559,7 @@ Function CoreAlloc(Paras: Word): Word;
 Procedure CoreFree(Sg, Paras: Word);
 Function CoreFreeTotal: Word;
 Function CoreLargest: Word;
+Function CoreGrow(Sg, Paras: Word): Boolean;
 
 SegmentImplementation
 
@@ -617,6 +631,26 @@ Begin
  T:=0;
  For I:=1 To MapCount Do If MapSize[I]>T Then T:=MapSize[I];
  CoreLargest:=T;
+End;
+
+Function CoreGrow(Sg, Paras: Word): Boolean;
+{ prend Paras paragraphes libres a partir de Sg : agrandissement sur place
+  d'une image dont la fin est en Sg (break) }
+Var I,J: Integer;
+Begin
+ CoreGrow:=False;
+ For I:=1 To MapCount Do
+  If MapAddr[I]=Sg Then Begin
+   If MapSize[I]<Paras Then Exit;
+   Inc(MapAddr[I],Paras); Dec(MapSize[I],Paras);
+   If MapSize[I]=0 Then Begin
+    For J:=I To MapCount-1 Do Begin
+     MapAddr[J]:=MapAddr[J+1]; MapSize[J]:=MapSize[J+1];
+    End;
+    Dec(MapCount);
+   End;
+   CoreGrow:=True; Exit;
+  End;
 End;
 
 SegmentEnd;
@@ -796,10 +830,13 @@ Asm
 End;
 
 Procedure NoDosStub; Assembler;
-{ INT 21h d'un processus sans couche libc : appel systeme exit(SIGSYS). }
+{ INT 21h d'un processus sans couche libc : kill(getpid(), SIGSYS). }
 Asm
- MOV AX,1
- MOV BX,7F00h
+ MOV AX,20
+ INT 80h
+ MOV BX,AX
+ MOV CX,12
+ MOV AX,37
  INT 80h
 @L:
  JMP @L
@@ -938,12 +975,19 @@ Asm
 End;
 
 Procedure CheckTimers;
+{ reveils temporises et alarmes (SIGALRM) }
 Var I: Integer;
 Begin
- For I:=1 To NPROC-1 Do With Procs[I] Do
-  If (Stat=PSLEEP) And (Wake<>0) And (Ticks>=Wake) Then Begin
-   Wake:=0; Stat:=PRUN;
+ For I:=1 To NPROC-1 Do Begin
+  With Procs[I] Do
+   If (Stat=PSLEEP) And (Wake<>0) And (Ticks>=Wake) Then Begin
+    Wake:=0; Stat:=PRUN;
+   End;
+  If (Procs[I].Alarm<>0) And (Ticks>=Procs[I].Alarm) And
+    (Procs[I].Stat In [PRUN,PSLEEP]) Then Begin
+   Procs[I].Alarm:=0; PostSig(I,SIGALRM);
   End;
+ End;
 End;
 
 Procedure Swtch;
@@ -1036,7 +1080,7 @@ End;
 
 Procedure PostSig(P: Integer; Sig: Integer);
 Begin
- If (Sig<1) Or (Sig>15) Then Exit;
+ If (Sig<1) Or (Sig>=NSIG) Then Exit;
  With Procs[P] Do Begin
   If Stat In [PFREE,PZOMB] Then Exit;
   If (SigIgn And (1 Shl Sig)<>0) And (Sig<>SIGKILL) Then Exit;
@@ -1262,15 +1306,20 @@ Uses KTypes,KLib,KSched;
 SegmentInterface
 
 Const
- TTYRAW=1; TTYNOECHO=2;
+ { sg_flags de la structure sgttyb (UNIX V7, ioctl TIOCGETP/TIOCSETP) }
+ TT_TANDEM=1; TT_CBREAK=2; TT_LCASE=4; TT_ECHO=8; TT_CRMOD=$10; TT_RAW=$20;
 
 Var
- TtyMode: Word;
+ TtyFlags: Word;                   { sg_flags }
+ TtyErase, TtyKill: Char;          { sg_erase, sg_kill }
+ TChars: Array[0..5] Of Char;      { tchars : intr, quit, start, stop, eof, brk }
  TtyWaiting: Integer;
 
+Procedure TtyInit;
 Procedure TtyPoll;
 Procedure TtyCheckIntr;
-Procedure TtyIntr;
+Procedure TtySig(Sig: Integer);
+Procedure TtyFlush;
 Function TtyRead(Sg, Os, N: Word; Var Err: Integer): Integer;
 Function TtyWrite(Sg, Os, N: Word): Integer;
 Function TtyAvail: Integer;
@@ -1298,72 +1347,89 @@ Begin
  InCount:=(InTail-InHead) And 511;
 End;
 
+Procedure TtyInit;
+{ etat initial du terminal (comme apres stty sane) }
+Begin
+ TtyFlags:=TT_ECHO Or TT_CRMOD;
+ TtyErase:=#8; TtyKill:=#21;
+ TChars[0]:=#3; TChars[1]:=#28; TChars[2]:=#17; TChars[3]:=#19;
+ TChars[4]:=#4; TChars[5]:=#255;
+End;
+
 Procedure Echo(C: Char);
 Begin
- If TtyMode And TTYNOECHO<>0 Then Exit;
+ If TtyFlags And TT_ECHO=0 Then Exit;
  If C=#10 Then ConPutC(#13);
  ConPutC(C);
 End;
 
-Procedure TtyIntr;
-{ ^C : SIGINT aux processus d'avant-plan, c'est-a-dire tous sauf init et
-  ceux qui attendent la fin d'un fils (l'interpreteur de commandes). }
+Procedure TtyFlush;
+{ entree en attente videe (TIOCFLUSH, TIOCSETP, signal du clavier) }
+Begin
+ InHead:=InTail; InEof:=0; LineLen:=0;
+End;
+
+Procedure TtySig(Sig: Integer);
+{ ^C (SIGINT), ^\ (SIGQUIT) ou Ctrl+Break : signal a tous les processus
+  du terminal, sauf init (comme UNIX V7, dont le terminal unique est celui
+  de tous les processus). L'interpreteur de commandes ignore ces signaux
+  pour ses commandes lancees en arriere-plan (&). }
 Var I: Integer;
 Begin
+ TtyFlush;
  For I:=1 To NPROC-1 Do With Procs[I] Do
-  If (Stat In [PRUN,PSLEEP]) And (Pid>1) And Not RawKbd And
-    Not ((Stat=PSLEEP) And ((Chan=CHWAIT+I) Or (Chan=CHVFORK+I))) Then
-   PostSig(I,SIGINT);
+  If (Stat In [PRUN,PSLEEP]) And (Pid>1) Then PostSig(I,Sig);
 End;
 
 Procedure Input(C: Char; Scan: Byte);
 Var I: Integer;
 Begin
- If TtyMode And TTYRAW<>0 Then Begin
+ If TtyFlags And (TT_RAW Or TT_CBREAK)<>0 Then Begin
+  { RAW : caracteres tels quels; CBREAK : un caractere a la fois, avec
+    l'echo et les signaux. Touches etendues : 0 puis code de balayage. }
   If (C=#0) Or (C=#$E0) Then Begin
    If Scan<>0 Then Begin PutIn(#0); PutIn(Chr(Scan)) End;
-  End Else PutIn(C);
+  End Else Begin
+   If (C=#13) And (TtyFlags And (TT_RAW Or TT_CRMOD)=TT_CRMOD) Then C:=#10;
+   PutIn(C);
+   If TtyFlags And TT_RAW=0 Then Echo(C);
+  End;
   Wakeup(CHTTY);
   Exit;
  End;
- Case C Of
-  #0,#$E0: ;
-  #3: Begin
-       Echo('^'); Echo('C'); Echo(#10);
-       LineLen:=0;
-       TtyIntr;
-      End;
-  #8,#127: If LineLen>0 Then Begin
-       Dec(LineLen); Echo(#8); Echo(' '); Echo(#8);
-      End;
-  #21: Begin
-       While LineLen>0 Do Begin Dec(LineLen); Echo(#8); Echo(' '); Echo(#8) End;
-      End;
-  #4: Begin
-       If LineLen=0 Then Inc(InEof)
-       Else Begin
-        For I:=0 To LineLen-1 Do PutIn(Line[I]);
-        LineLen:=0;
-       End;
-      End;
-  #13,#10: Begin
-       For I:=0 To LineLen-1 Do PutIn(Line[I]);
-       PutIn(#10); LineLen:=0; Echo(#10);
-      End;
-  Else If (C>=' ') Or (C=#9) Or (C=#27) Then Begin
-   If LineLen<255 Then Begin Line[LineLen]:=C; Inc(LineLen); Echo(C) End;
+ If C=#127 Then C:=TtyErase;
+ If (C=#13) And (TtyFlags And TT_CRMOD<>0) Then C:=#10;
+ If (C=#0) Or (C=#$E0) Then
+ Else If C=TtyErase Then Begin
+  If LineLen>0 Then Begin Dec(LineLen); Echo(#8); Echo(' '); Echo(#8) End;
+ End Else If C=TtyKill Then Begin
+  While LineLen>0 Do Begin Dec(LineLen); Echo(#8); Echo(' '); Echo(#8) End;
+ End Else If C=TChars[4] Then Begin
+  If LineLen=0 Then Inc(InEof)
+  Else Begin
+   For I:=0 To LineLen-1 Do PutIn(Line[I]);
+   LineLen:=0;
   End;
+ End Else If (C=#10) Or (C=#13) Then Begin
+  For I:=0 To LineLen-1 Do PutIn(Line[I]);
+  PutIn(#10); LineLen:=0; Echo(#10);
+ End Else If (C>=' ') Or (C=#9) Or (C=#27) Then Begin
+  If LineLen<255 Then Begin Line[LineLen]:=C; Inc(LineLen); Echo(C) End;
  End;
  Wakeup(CHTTY);
 End;
 
 Procedure KbdPut(A, S: Byte);
-{ frappe recue : ^C (hors mode brut) interrompt aussitot l'avant-plan }
+{ frappe recue : le caractere d'interruption (^C) ou d'abandon (^\), hors
+  mode RAW, envoie aussitot SIGINT ou SIGQUIT }
 Var N: Word;
 Begin
- If (A=3) And (TtyMode And TTYRAW=0) Then Begin
-  Echo('^'); Echo('C'); Echo(#10); LineLen:=0;
-  TtyIntr;
+ If (TtyFlags And TT_RAW=0) And (A<>0) And
+   ((A=Ord(TChars[0])) Or (A=Ord(TChars[1]))) Then Begin
+  Echo('^');
+  If A=Ord(TChars[0]) Then Echo('C') Else Echo('\');
+  Echo(#10);
+  If A=Ord(TChars[0]) Then TtySig(SIGINT) Else TtySig(SIGQUIT);
   Exit;
  End;
  N:=(KbdTail+1) And 127;
@@ -1394,7 +1460,6 @@ Begin
  If SerialPort<>0 Then
   While Port[SerialPort+5] And 1<>0 Do Begin
    A:=Port[SerialPort];
-   If (A=127) And (TtyMode And TTYRAW=0) Then A:=8;
    If (A=13) Or (A<>10) Then KbdPut(A,0);
   End;
 End;
@@ -1415,13 +1480,13 @@ Procedure TtyPoll;
   processus lit le terminal }
 Begin
  If TtyWaiting>0 Then PollKeys Else KbdDrain;
- If BreakFlag Then Begin BreakFlag:=False; TtyIntr End;
+ If BreakFlag Then Begin BreakFlag:=False; TtySig(SIGINT) End;
 End;
 
 Procedure TtyCheckIntr;
 { appelee a la preemption : frappes en attente (^C), Ctrl+Break }
 Begin
- If BreakFlag Then Begin BreakFlag:=False; TtyIntr End;
+ If BreakFlag Then Begin BreakFlag:=False; TtySig(SIGINT) End;
  KbdDrain;
 End;
 
@@ -1450,7 +1515,7 @@ Begin
  While (Got<N) And (InCount>0) Do Begin
   C:=InBuf[InHead]; InHead:=(InHead+1) And 511;
   Mem[Sg:Os+Got]:=Ord(C); Inc(Got);
-  If (C=#10) And (TtyMode And TTYRAW=0) Then Break;
+  If (C=#10) And (TtyFlags And (TT_RAW Or TT_CBREAK)=0) Then Break;
  End;
  TtyRead:=Got;
 End;
@@ -1460,7 +1525,7 @@ Var I: Word; C: Char;
 Begin
  For I:=0 To N-1 Do Begin
   C:=Chr(Mem[Sg:Os+I]);
-  If C=#10 Then ConPutC(#13);
+  If (C=#10) And (TtyFlags And (TT_RAW Or TT_CRMOD)=TT_CRMOD) Then ConPutC(#13);
   ConPutC(C);
  End;
  TtyWrite:=N;
@@ -1579,7 +1644,7 @@ End;
 Procedure FatRoot(M: Integer; Var V: TVNode);
 Begin
  FillChar(V,SizeOf(V),0);
- V.Typ:=VDIR; V.Mnt:=M; V.Ino:=0; V.First:=0; V.Mode:=S_IFDIR Or $1ED;
+ V.Typ:=VDIR; V.Mnt:=M; V.Ino:=0; V.First:=0; V.Mode:=S_IFDIR Or $1FF;
  V.NLink:=2; V.MTime:=BootTime;
 End;
 
@@ -1769,9 +1834,9 @@ Begin
  V.DirLBA:=LBA; V.DirIdx:=Idx; V.Ino:=LBA*16+Idx;
  V.MTime:=UnixStamp(MemW[Sg:Os+24],MemW[Sg:Os+22]);
  If A And $10<>0 Then Begin
-  V.Typ:=VDIR; V.Mode:=S_IFDIR Or $1ED; V.NLink:=2; V.Size:=0;
+  V.Typ:=VDIR; V.Mode:=S_IFDIR Or $1FF; V.NLink:=2; V.Size:=0;
  End Else Begin
-  V.Typ:=VREG; V.Mode:=S_IFREG Or $1ED; V.NLink:=1;
+  V.Typ:=VREG; V.Mode:=S_IFREG Or $1FF; V.NLink:=1;
  End;
  If A And 1<>0 Then V.Mode:=V.Mode And Not $92;
 End;
@@ -2103,12 +2168,13 @@ Procedure UfsClose(Var V: TVNode);
 Function UfsReadDir(Var V: TVNode; Var Pos: Longint; Var Name: TName;
   Var Ino: Longint; Var Typ: Byte): Boolean;
 Function UfsCreate(Var Dir: TVNode; Name: TName; IsDir: Boolean;
-  Var V: TVNode): Integer;
+  Mode: Word; Var V: TVNode): Integer;
 Function UfsRemove(Var Dir: TVNode; Name: TName; IsDir: Boolean): Integer;
 Function UfsRename(Var D1: TVNode; N1: TName; Var D2: TVNode;
   N2: TName): Integer;
 Function UfsLink(Var Dir: TVNode; Name: TName; Var V: TVNode): Integer;
 Function UfsChmod(Var V: TVNode; Mode: Word): Integer;
+Function UfsSetAttr(Var V: TVNode): Integer;
 Function UfsFreeKB(M: Integer): Longint;
 
 SegmentImplementation
@@ -2288,7 +2354,8 @@ Begin
  S:=BufSeg(B);
  MemW[S:O]:=V.Mode; MemW[S:O+2]:=V.NLink;
  MemL[S:O+8]:=V.Size; MemL[S:O+12]:=0;
- MemL[S:O+24]:=V.MTime; MemL[S:O+32]:=V.MTime;
+ MemL[S:O+24]:=V.MTime; MemL[S:O+32]:=KTime;
+ MemL[S:O+112]:=V.Uid; MemL[S:O+116]:=V.Gid;
  BWrite(B);
 End;
 
@@ -2307,6 +2374,7 @@ Begin
  S:=BufSeg(B);
  V.Mode:=MemW[S:O]; V.NLink:=MemW[S:O+2];
  V.Size:=MemL[S:O+8]; V.MTime:=MemL[S:O+24];
+ V.Uid:=MemW[S:O+112]; V.Gid:=MemW[S:O+116];
  Case V.Mode And S_IFMT Of
   S_IFDIR: V.Typ:=VDIR;
   S_IFREG: V.Typ:=VREG;
@@ -2853,15 +2921,17 @@ Begin
  MemW[S:O]:=Mode; MemW[S:O+2]:=NLink;
  MemL[S:O+16]:=T; MemL[S:O+24]:=T; MemL[S:O+32]:=T;
  MemL[S:O+108]:=T Xor GenCount;
+ MemW[S:O+112]:=Procs[Cur].Uid; MemW[S:O+116]:=Procs[Cur].Gid;
  If Not BWrite(B) Then Exit;
  FillChar(V,SizeOf(V),0);
  V.Mnt:=M; V.Ino:=Ino; V.Mode:=Mode; V.NLink:=NLink; V.MTime:=T;
+ V.Uid:=Procs[Cur].Uid; V.Gid:=Procs[Cur].Gid;
  If Mode And S_IFMT=S_IFDIR Then V.Typ:=VDIR Else V.Typ:=VREG;
  InitInode:=0;
 End;
 
 Function UfsCreate(Var Dir: TVNode; Name: TName; IsDir: Boolean;
-  Var V: TVNode): Integer;
+  Mode: Word; Var V: TVNode): Integer;
 Var M: Integer; Ino,X: Longint; E: Integer;
 Begin
  M:=Dir.Mnt;
@@ -2871,8 +2941,8 @@ Begin
  If Find(Dir,Name,X) Then Begin UfsCreate:=EEXIST; Exit End;
  Ino:=AllocInode(M,IsDir);
  If Ino=0 Then Begin UfsCreate:=ENOSPC; Exit End;
- If IsDir Then E:=InitInode(V,M,Ino,S_IFDIR Or $1ED,2)
- Else E:=InitInode(V,M,Ino,S_IFREG Or $1A4,1);
+ If IsDir Then E:=InitInode(V,M,Ino,S_IFDIR Or (Mode And $FFF),2)
+ Else E:=InitInode(V,M,Ino,S_IFREG Or (Mode And $FFF),1);
  If E<>0 Then Begin UfsCreate:=E; Exit End;
  If IsDir Then Begin
   { "." et ".." }
@@ -2973,6 +3043,14 @@ Begin
  UfsChmod:=0;
 End;
 
+Function UfsSetAttr(Var V: TVNode): Integer;
+{ proprietaire, groupe et date de modification de V ecrits dans l'inode }
+Begin
+ If Mounts[V.Mnt].RO Then Begin UfsSetAttr:=EROFS; Exit End;
+ IUpdate(V);
+ UfsSetAttr:=0;
+End;
+
 SegmentEnd;
 
 { ====================================================================== }
@@ -2997,12 +3075,15 @@ Function VWrite(Vn: Integer; Off: Longint; Sg, Os, N: Word): Integer;
 Function VTrunc(Vn: Integer): Integer;
 Function VReadDir(Vn: Integer; Var Pos: Longint; Var Name: TName;
   Var Ino: Longint; Var Typ: Byte): Boolean;
-Function VCreate(Dir: Integer; Name: TName; IsDir: Boolean;
+Function VCreate(Dir: Integer; Name: TName; IsDir: Boolean; Mode: Word;
   Var Vn: Integer): Integer;
 Function VRemove(Dir: Integer; Name: TName; IsDir: Boolean): Integer;
 Function VRename(D1: Integer; N1: TName; D2: Integer; N2: TName): Integer;
 Function VLink(Dir: Integer; Name: TName; Vn: Integer): Integer;
 Function VChmod(Vn: Integer; Mode: Word): Integer;
+Function VChown(Vn: Integer; U, G: Word): Integer;
+Function VUtime(Vn: Integer; T: Longint): Integer;
+Function VAccess(Vn: Integer; Want: Word): Integer;
 Function DoMount(Special, Dir: TPath; FsType: Word): Integer;
 Function DoUmount(Dir: TPath): Integer;
 Function MountFree(M: Integer): Longint;
@@ -3104,8 +3185,10 @@ Begin
  FillChar(T,SizeOf(T),0);
  T.Mnt:=M; T.Typ:=VCHR; T.Ino:=Minor; T.Minor:=Minor;
  T.Mode:=S_IFCHR Or $1B6; T.NLink:=1; T.MTime:=BootTime;
- If Minor>=DEVDISK Then
+ If Minor>=DEVDISK Then Begin
   T.Size:=Disks[Minor-DEVDISK].Sectors*512;
+  T.Mode:=S_IFCHR Or $1A0;
+ End;
 End;
 
 Function DevLookup(M: Integer; Name: TName; Var T: TVNode): Integer;
@@ -3324,7 +3407,8 @@ Begin
   End;
   Inc(I);
   If VNodes[V].Typ<>VDIR Then Begin VPut(V); Namei:=ENOTDIR; Exit End;
-  E:=VLookup(V,C,T);
+  E:=VAccess(V,1);
+  If E=0 Then E:=VLookup(V,C,T);
   VPut(V);
   If E<>0 Then Begin Namei:=E; Exit End;
   V:=VGet(T);
@@ -3404,14 +3488,14 @@ Begin
  End;
 End;
 
-Function VCreate(Dir: Integer; Name: TName; IsDir: Boolean;
+Function VCreate(Dir: Integer; Name: TName; IsDir: Boolean; Mode: Word;
   Var Vn: Integer): Integer;
 Var T: TVNode; E: Integer;
 Begin
  Vn:=0;
  Case FsType(Dir) Of
   FSFAT12,FSFAT16: E:=FatCreate(VNodes[Dir],Name,IsDir,T);
-  FSUFS: E:=UfsCreate(VNodes[Dir],Name,IsDir,T);
+  FSUFS: E:=UfsCreate(VNodes[Dir],Name,IsDir,Mode And Not Procs[Cur].Umask,T);
   Else E:=EROFS;
  End;
  If E=0 Then Begin
@@ -3451,7 +3535,48 @@ Function VChmod(Vn: Integer; Mode: Word): Integer;
 Begin
  Case FsType(Vn) Of
   FSUFS: VChmod:=UfsChmod(VNodes[Vn],Mode);
-  Else VChmod:=0;
+  Else VChmod:=0;   { FAT, /dev : pas de permissions enregistrees }
+ End;
+End;
+
+Function VChown(Vn: Integer; U, G: Word): Integer;
+Begin
+ VChown:=0;
+ If FsType(Vn)<>FSUFS Then Exit;   { FAT, /dev : proprietaire root }
+ VNodes[Vn].Uid:=U; VNodes[Vn].Gid:=G;
+ VChown:=UfsSetAttr(VNodes[Vn]);
+End;
+
+Function VUtime(Vn: Integer; T: Longint): Integer;
+Begin
+ VUtime:=0;
+ Case FsType(Vn) Of
+  FSUFS: Begin VNodes[Vn].MTime:=T; VUtime:=UfsSetAttr(VNodes[Vn]) End;
+  FSFAT12,FSFAT16: If VNodes[Vn].Typ=VREG Then Begin
+   If Mounts[VNodes[Vn].Mnt].RO Then Begin VUtime:=EROFS; Exit End;
+   VNodes[Vn].MTime:=T; FatUpdate(VNodes[Vn]);
+  End;
+ End;
+End;
+
+Function VAccess(Vn: Integer; Want: Word): Integer;
+{ permission Want (4 lecture, 2 ecriture, 1 execution ou recherche) pour
+  l'utilisateur du processus courant : bits du proprietaire, du groupe ou
+  des autres; le super-utilisateur (uid 0) a tous les droits, sauf
+  l'execution d'un fichier sans aucun bit x }
+Var M: Word;
+Begin
+ VAccess:=0;
+ With VNodes[Vn] Do Begin
+  If Procs[Cur].Uid=0 Then Begin
+   If (Want And 1<>0) And (Typ<>VDIR) And (Mode And $49=0) Then
+     VAccess:=EACCES;
+   Exit;
+  End;
+  M:=Mode;
+  If Uid=Procs[Cur].Uid Then M:=M Shr 6
+  Else If Gid=Procs[Cur].Gid Then M:=M Shr 3;
+  If M And Want And 7<>Want And 7 Then VAccess:=EACCES;
  End;
 End;
 
@@ -3536,13 +3661,18 @@ Uses KTypes,KLib,KMem,KSched,KVfs;
 SegmentInterface
 
 Var
- KArgs: Array[0..2047] Of Char;   { arguments et environnement d'exec }
+ { arguments et environnement d'exec : KArgc chaines de argv puis KEnvc
+   chaines de l'environnement, chacune terminee par un octet nul }
+ KArgs: Array[0..2047] Of Char;
+ KArgLen: Word;
+ KArgc, KEnvc: Integer;
 
 Function NewProc: Integer;
 Procedure ReleaseMemory(P: Integer);
 Function DoFork: Integer;
 Function DoVFork: Integer;
-Function DoExec(Path: TPath; ArgSeg, ArgOfs, ArgLen: Word): Integer;
+Function DoExec(Path: TPath): Integer;
+Function GatherArgs(ASeg, AOfs, ESeg, EOfs: Word): Integer;
 Procedure DoExit(Status: Word);
 Function DoWait(Pid: Integer; Options: Word; Var Status: Word): Integer;
 Procedure CheckSignals;
@@ -3628,7 +3758,8 @@ Begin
   Inc(NextPid); If NextPid>30000 Then NextPid:=2;
   While FindPid(NextPid)>=0 Do Inc(NextPid);
   Pid:=NextPid; PPid:=Procs[Cur].Pid;
-  Where:=A; CpuTicks:=0; SigPend:=0; Chan:=0; Wake:=0; Intr:=False;
+  Where:=A; CpuTicks:=0; ChildTicks:=0; SigPend:=0; Chan:=0; Wake:=0;
+  Intr:=False; Alarm:=0;
   USS:=CurUSS; USP:=CurUSP;
   For I:=0 To NOFILE-1 Do If Fd[I]<>0 Then FRef(Fd[I]);
   { trame du fils (dans sa copie) : AX = 0, CF = 0 }
@@ -3665,7 +3796,8 @@ Begin
   Inc(NextPid); If NextPid>30000 Then NextPid:=2;
   While FindPid(NextPid)>=0 Do Inc(NextPid);
   Pid:=NextPid; PPid:=Procs[Cur].Pid;
-  CpuTicks:=0; SigPend:=0; Chan:=0; Wake:=0; Intr:=False;
+  CpuTicks:=0; ChildTicks:=0; SigPend:=0; Chan:=0; Wake:=0; Intr:=False;
+  Alarm:=0;
   USS:=CurUSS; USP:=CurUSP;
   For I:=0 To NOFILE-1 Do If Fd[I]<>0 Then FRef(Fd[I]);
  End;
@@ -3697,12 +3829,39 @@ Begin
  CoffL:=MemL[Seg(CoffSh):Ofs(CoffSh)+O];
 End;
 
-Function DoExec(Path: TPath; ArgSeg, ArgOfs, ArgLen: Word): Integer;
+Function GatherArgs(ASeg, AOfs, ESeg, EOfs: Word): Integer;
+{ recopie dans KArgs les chaines des tableaux argv (ASeg:AOfs) et envp
+  (ESeg:EOfs) de l'appelant : pointeurs FAR termines par un pointeur nul
+  (un tableau a l'adresse 0:0 est vide) }
+Var Sg,Os,O: Word; Pass: Integer; N: Integer;
+Begin
+ GatherArgs:=0; KArgLen:=0; KArgc:=0; KEnvc:=0;
+ For Pass:=0 To 1 Do Begin
+  If Pass=0 Then Begin Sg:=ASeg; O:=AOfs End Else Begin Sg:=ESeg; O:=EOfs End;
+  If (Sg<>0) Or (O<>0) Then
+   While (MemW[Sg:O]<>0) Or (MemW[Sg:O+2]<>0) Do Begin
+    Os:=MemW[Sg:O];
+    N:=0;
+    Repeat
+     If KArgLen>=SizeOf(KArgs)-1 Then Begin GatherArgs:=E2BIG; Exit End;
+     KArgs[KArgLen]:=Chr(Mem[MemW[Sg:O+2]:Os+N]); Inc(KArgLen); Inc(N);
+    Until KArgs[KArgLen-1]=#0;
+    If Pass=0 Then Inc(KArgc) Else Inc(KEnvc);
+    Inc(O,4);
+    If (Pass=0) And (KArgc>255) Or (KEnvc>255) Then Begin
+     GatherArgs:=E2BIG; Exit;
+    End;
+   End;
+ End;
+End;
+
+Function DoExec(Path: TPath): Integer;
 { Charge un executable COFF (format natif de UNIX-0, produit par UPC /X) ou
-  MZ (programmes DOS), puis prepare le prefixe, l'environnement et la trame
-  initiale du processus courant. }
+  MZ (programmes DOS), puis prepare la pile (argc, argv, envp comme UNIX),
+  le prefixe compatible DOS, l'environnement et la trame initiale du
+  processus courant. Les arguments sont dans KArgs (KArgc, KEnvc). }
 Var
- Vn,I,N,Argc: Integer;
+ Vn,I,N: Integer;
  H: Array[0..15] Of Word;
  Coff: Boolean;
  NSec,Ext: Longint;
@@ -3714,23 +3873,30 @@ Var
  HdrParas,LoadParas,EnvParas,Total,Extra,MinA,MaxA: Longint;
  Mem_,Load,PSP_,EnvS,SS_,SP_: Word;
  R: Array[0..1] Of Word;
- Chunk,Sg,O,K,EnvLen,EnvStart,EnvEnd,TailLen: Word;
+ Chunk,Sg,O,K,EnvStart,TailLen,StrPos,PtrPos,ArgcPos: Word;
+ Top,UArea: Longint;
  Name: TPath;
  E: Integer;
+ Lost: Boolean;
 Begin
- { arguments recopies dans le noyau avant de liberer l'ancienne image }
- If ArgLen>SizeOf(KArgs)-2 Then Begin DoExec:=E2BIG; Exit End;
- If ArgLen>0 Then FarMove(ArgSeg,ArgOfs,Seg(KArgs),Ofs(KArgs),ArgLen);
- KArgs[ArgLen]:=#0; KArgs[ArgLen+1]:=#0;
+ { debut de l'environnement dans KArgs }
+ I:=0;
+ For N:=1 To KArgc Do Begin
+  While KArgs[I]<>#0 Do Inc(I);
+  Inc(I);
+ End;
+ EnvStart:=I;
  E:=Namei(Path,Vn);
  If E<>0 Then Begin DoExec:=E; Exit End;
  If VNodes[Vn].Typ<>VREG Then Begin VPut(Vn); DoExec:=EACCES; Exit End;
+ E:=VAccess(Vn,1);
+ If E<>0 Then Begin VPut(Vn); DoExec:=E; Exit End;
  FillChar(H,SizeOf(H),0);
  If VRead(Vn,0,Seg(H),Ofs(H),32)<20 Then Begin
   VPut(Vn); DoExec:=ENOEXEC; Exit;
  End;
  Coff:=H[0]=COFFMAGIC;
- HeapMin:=0;
+ HeapMin:=DEFHEAP;
  If Coff Then Begin
   { en-tete COFF : f_nscns (H[1]), f_opthdr (H[8]), f_flags (H[9]) ;
     a.out : entry a l'octet 20+16 }
@@ -3744,7 +3910,7 @@ Begin
    VPut(Vn); DoExec:=ENOEXEC; Exit;
   End;
   CsRel:=Word(J Shr 4); IpV:=Word(J And 15);
-  Ext:=0; SsRel:=$FFFF; SpV:=0;
+  Ext:=0; SsRel:=$FFFF; SpV:=0; HeapMin:=-1;
   For I:=0 To NSec-1 Do Begin
    If CoffL(I*40+12)+CoffL(I*40+16)>Ext Then Ext:=CoffL(I*40+12)+CoffL(I*40+16);
    If (CoffSh[I*40]=Ord('.')) And (CoffSh[I*40+1]=Ord('s')) And
@@ -3753,8 +3919,10 @@ Begin
    End;
    If (CoffSh[I*40]=Ord('.')) And (CoffSh[I*40+1]=Ord('h')) And
      (CoffSh[I*40+2]=Ord('e')) Then HeapMin:=(CoffL(I*40+16)+15) Div 16;
+   { .heap de taille nulle : programme sans tas }
   End;
   If (SsRel=$FFFF) Or (Ext>$9FFF0) Then Begin VPut(Vn); DoExec:=ENOEXEC; Exit End;
+  If HeapMin=-1 Then HeapMin:=DEFHEAP;
   LoadParas:=(Ext+15) Div 16; MinA:=0; HdrParas:=0; ImgBytes:=0;
  End Else Begin
   If H[0]<>$5A4D Then Begin VPut(Vn); DoExec:=ENOEXEC; Exit End;
@@ -3766,22 +3934,28 @@ Begin
   MinA:=H[5]; MaxA:=H[6];
   CsRel:=H[11]; IpV:=H[10]; SsRel:=H[7]; SpV:=H[8];
  End;
- { environnement : argv et env tels quels, nom du programme, argc et argv
-   (extension UNIX-0) }
- I:=0; Argc:=0;
- While (I<ArgLen) And (KArgs[I]<>#0) Do Begin
-  While (I<ArgLen) And (KArgs[I]<>#0) Do Inc(I);
-  Inc(I); Inc(Argc);
- End;
- EnvStart:=I+1;   { apres la chaine vide qui termine argv }
- EnvParas:=(Longint(ArgLen)+Length(Path)+64) Div 16+1;
+ { pile : chaines, envp[], argv[] et argc au sommet de la pile; il faut
+   qu'il reste au moins la moitie de la pile au programme }
+ Top:=SpV; If Top=0 Then Top:=$10000;
+ UArea:=((KArgLen+1) And $FFFE)+Longint(KArgc+KEnvc+2)*4+2;
+ If UArea+24>Top Div 2 Then Begin VPut(Vn); DoExec:=E2BIG; Exit End;
+ { environnement (programmes DOS) : env, nom du programme, argc et argv }
+ EnvParas:=(Longint(KArgLen)+Length(Path)+64) Div 16+1;
  { tas : le runtime de Unix Pascal reserve ses blocs par la libc (service
    48h), dans la zone qui suit l'image et sa pile (maxalloc = minalloc) }
- Extra:=DEFHEAP; If HeapMin>Extra Then Extra:=HeapMin;
+ Extra:=HeapMin;   { .heap du COFF, sinon DEFHEAP }
  Total:=EnvParas+16+LoadParas+MinA+Extra;
  If Total>$A000 Then Begin VPut(Vn); DoExec:=ENOMEM; Exit End;
  Mem_:=CoreAlloc(Total);
- If Mem_=0 Then Begin VPut(Vn); DoExec:=ENOMEM; Exit End;
+ Lost:=False;
+ If (Mem_=0) And Not Procs[Cur].Borrowed And (Procs[Cur].Size<>0) Then Begin
+  { memoire fragmentee : comme UNIX V7, l'ancienne image est liberee avant
+    le chargement (arguments deja copies dans KArgs); un echec ensuite
+    termine le processus (SIGKILL) }
+  ReleaseMemory(Cur); Lost:=True;
+  Mem_:=CoreAlloc(Total);
+ End;
+ If Mem_=0 Then Begin VPut(Vn); If Lost Then DoExit(SIGKILL); DoExec:=ENOMEM; Exit End;
  ParaZero(Mem_,EnvParas+16);
  EnvS:=Mem_; PSP_:=Mem_+EnvParas; Load:=PSP_+16;
  If Coff Then Begin
@@ -3795,7 +3969,7 @@ Begin
     While Rem>0 Do Begin
      If Rem>$4000 Then Chunk:=$4000 Else Chunk:=Rem;
      If VRead(Vn,Off,Sg,O,Chunk)<>Chunk Then Begin
-      VPut(Vn); CoreFree(Mem_,Total); DoExec:=EIO; Exit;
+      VPut(Vn); CoreFree(Mem_,Total); If Lost Then DoExit(SIGKILL); DoExec:=EIO; Exit;
      End;
      Inc(Off,Chunk); Dec(Rem,Chunk); Inc(Sg,Chunk Div 16);
     End;
@@ -3803,11 +3977,11 @@ Begin
   For I:=0 To NSec-1 Do
    For J:=0 To Longint(MemW[Seg(CoffSh):Ofs(CoffSh)+I*40+32])-1 Do Begin
     If VRead(Vn,CoffL(I*40+24)+J*10,Seg(RE),Ofs(RE),10)<>10 Then Begin
-     VPut(Vn); CoreFree(Mem_,Total); DoExec:=ENOEXEC; Exit;
+     VPut(Vn); CoreFree(Mem_,Total); If Lost Then DoExit(SIGKILL); DoExec:=ENOEXEC; Exit;
     End;
     Off:=Longint(RE[1]) Shl 16+RE[0];
     If (RE[4]<>R_SEG12) Or (Off+2>Longint(LoadParas)*16) Then Begin
-     VPut(Vn); CoreFree(Mem_,Total); DoExec:=ENOEXEC; Exit;
+     VPut(Vn); CoreFree(Mem_,Total); If Lost Then DoExit(SIGKILL); DoExec:=ENOEXEC; Exit;
     End;
     Sg:=Load+Word(Off Shr 4); O:=Word(Off And 15);
     MemW[Sg:O]:=MemW[Sg:O]+Load;
@@ -3818,13 +3992,13 @@ Begin
   While Rem>0 Do Begin
    If Rem>$4000 Then Chunk:=$4000 Else Chunk:=Rem;
    If VRead(Vn,Off,Sg,0,Chunk)<>Chunk Then Begin
-    VPut(Vn); CoreFree(Mem_,Total); DoExec:=EIO; Exit;
+    VPut(Vn); CoreFree(Mem_,Total); If Lost Then DoExit(SIGKILL); DoExec:=EIO; Exit;
    End;
    Inc(Off,Chunk); Dec(Rem,Chunk); Inc(Sg,Chunk Div 16);
   End;
   For I:=0 To H[3]-1 Do Begin
    If VRead(Vn,H[12]+Longint(I)*4,Seg(R),Ofs(R),4)<>4 Then Begin
-    VPut(Vn); CoreFree(Mem_,Total); DoExec:=ENOEXEC; Exit;
+    VPut(Vn); CoreFree(Mem_,Total); If Lost Then DoExit(SIGKILL); DoExec:=ENOEXEC; Exit;
    End;
    MemW[Load+R[1]:R[0]]:=MemW[Load+R[1]:R[0]]+Load;
   End;
@@ -3833,19 +4007,13 @@ Begin
  ParaZero(Load+LoadParas,MinA);
  { environnement : VAR=VAL..., 0, mot 1, chemin, puis argc et argv }
  O:=0;
- I:=EnvStart;
- While (I<ArgLen) And (KArgs[I]<>#0) Do Begin
-  While (I<ArgLen) And (KArgs[I]<>#0) Do Begin
-   Mem[EnvS:O]:=Ord(KArgs[I]); Inc(O); Inc(I);
-  End;
-  Mem[EnvS:O]:=0; Inc(O); Inc(I);
- End;
+ For I:=EnvStart To KArgLen-1 Do Begin Mem[EnvS:O]:=Ord(KArgs[I]); Inc(O) End;
  Mem[EnvS:O]:=0; Inc(O);
  MemW[EnvS:O]:=1; Inc(O,2);
  Name:=NormPath(Procs[Cur].Cwd,Path);
  PutFarStr(EnvS,O,Name); Inc(O,Length(Name)+1);
- MemW[EnvS:O]:=Argc; Inc(O,2);
- For I:=0 To EnvStart-2 Do Begin Mem[EnvS:O]:=Ord(KArgs[I]); Inc(O) End;
+ MemW[EnvS:O]:=KArgc; Inc(O,2);
+ For I:=0 To EnvStart-1 Do Begin Mem[EnvS:O]:=Ord(KArgs[I]); Inc(O) End;
  Mem[EnvS:O]:=0;
  { prefixe du programme (disposition du PSP) }
  Mem[PSP_:0]:=$CD; Mem[PSP_:1]:=$20;
@@ -3854,11 +4022,13 @@ Begin
  MemW[PSP_:$48]:=Load+LoadParas+MinA;   { debut du tas (libc) }
  { ligne de commande : argv[1..] separes par des espaces }
  TailLen:=0; I:=0;
- While (I<ArgLen) And (KArgs[I]<>#0) Do Inc(I);
- Inc(I);
- While (I<EnvStart-1) And (TailLen<126) Do Begin
+ If KArgc>0 Then Begin
+  While KArgs[I]<>#0 Do Inc(I);
+  Inc(I);
+ End;
+ While (I<EnvStart) And (TailLen<126) Do Begin
   If KArgs[I]=#0 Then Begin
-   If I<EnvStart-2 Then Begin Mem[PSP_:$81+TailLen]:=32; Inc(TailLen) End;
+   If I<EnvStart-1 Then Begin Mem[PSP_:$81+TailLen]:=32; Inc(TailLen) End;
   End Else Begin Mem[PSP_:$81+TailLen]:=Ord(KArgs[I]); Inc(TailLen) End;
   Inc(I);
  End;
@@ -3873,13 +4043,37 @@ Begin
  With Procs[Cur] Do Begin
   Home:=Mem_; Where:=Mem_; Size:=Total; PSP:=PSP_;
   DosOfs:=0; DosSeg:=0; RawKbd:=False;
-  I:=Length(Name);
-  While (I>0) And (Name[I]<>'/') Do Dec(I);
-  Procs[Cur].Name:=Copy(Name,I+1,15);
+  { signaux interceptes : remis a SIG_DFL; les signaux ignores le restent }
+  For I:=1 To NSIG-1 Do If SigH[I]<>1 Then SigH[I]:=0;
+  SigTramp:=0;
  End;
+ { nom de la commande (ps) : dernier element du chemin }
+ I:=Length(Name);
+ While (I>0) And (Name[I]<>'/') Do Dec(I);
+ Procs[Cur].Name:=Copy(Name,I+1,15);
  SetDosVector(Cur);
+ { pile UNIX : chaines au sommet, puis envp[] et argv[] (pointeurs FAR
+   termines par un pointeur nul) et argc, sur lequel pointe SP au debut du
+   programme (et PSP:4Ch, pour la libc) }
+ SS_:=Load+SsRel;
+ StrPos:=Word(Top-((KArgLen+1) And $FFFE));
+ PtrPos:=StrPos-Word(KArgc+KEnvc+2)*4;
+ ArgcPos:=PtrPos-2;
+ FarMove(Seg(KArgs),Ofs(KArgs),SS_,StrPos,KArgLen);
+ MemW[SS_:ArgcPos]:=KArgc;
+ O:=StrPos; K:=PtrPos;
+ For I:=0 To KArgc+KEnvc-1 Do Begin
+  If I=KArgc Then Begin MemL[SS_:K]:=0; Inc(K,4) End;
+  MemW[SS_:K]:=O; MemW[SS_:K+2]:=SS_; Inc(K,4);
+  While Mem[SS_:O]<>0 Do Inc(O);
+  Inc(O);
+ End;
+ If KEnvc=0 Then Begin MemL[SS_:K]:=0; Inc(K,4) End;
+ MemL[SS_:K]:=0;
+ MemW[PSP_:$4C]:=ArgcPos; MemW[PSP_:$4E]:=SS_;
+ Procs[Cur].ArgPtr:=Longint(SS_) Shl 16+ArgcPos;
  { trame initiale : registres, puis IP, CS, FLAGS }
- SS_:=Load+SsRel; SP_:=SpV-24;
+ SP_:=ArgcPos-24;
  For K:=0 To 11 Do MemW[SS_:SP_+K*2]:=0;
  MemW[SS_:SP_+14]:=PSP_;          { ES }
  MemW[SS_:SP_+16]:=PSP_;          { DS }
@@ -3892,6 +4086,8 @@ Begin
 End;
 
 Procedure DoExit(Status: Word);
+{ Status : etat rendu par wait, code de sortie * 256 (exit) ou numero du
+  signal qui a termine le processus }
 Var I: Integer; Parent: Integer;
 Begin
  If Procs[Cur].Pid=1 Then Begin
@@ -3901,7 +4097,7 @@ Begin
  CloseAll(Cur);
  ReleaseMemory(Cur);
  Procs[Cur].Status:=Status;
- Procs[Cur].DosSeg:=0;
+ Procs[Cur].DosSeg:=0; Procs[Cur].Alarm:=0;
  Parent:=FindPid(Procs[Cur].PPid);
  { les fils deviennent ceux d'init }
  For I:=1 To NPROC-1 Do
@@ -3927,7 +4123,7 @@ Begin
     If Procs[I].Stat=PZOMB Then Begin
      Status:=Procs[I].Status;
      DoWait:=Procs[I].Pid;
-     Inc(Procs[Cur].CpuTicks,Procs[I].CpuTicks);
+     Inc(Procs[Cur].ChildTicks,Procs[I].CpuTicks+Procs[I].ChildTicks);
      Procs[I].Stat:=PFREE; Procs[I].Pid:=0;
      Exit;
     End;
@@ -3939,18 +4135,37 @@ Begin
 End;
 
 Procedure CheckSignals;
-Var S: Word; I: Integer;
+{ au retour en mode utilisateur : signal en attente -> action par defaut
+  (fin du processus, etat de wait = numero du signal) ou gestionnaire de
+  l'utilisateur (signal(sig, fonction)). Comme dans UNIX V7, le gestionnaire
+  est remis a SIG_DFL avant d'etre appele. Une trame est preparee sur la pile
+  utilisateur : la trampoline de la libc appelle fonction(sig) avec DS =
+  donnees du programme, puis restaure les registres interrompus (IRET). }
+Var I,K: Integer; NSP: Word; H: Longint;
 Begin
  With Procs[Cur] Do Begin
-  SigPend:=SigPend And Not SigIgn And Not (1 Shl SIGCHLD);
+  SigPend:=SigPend And Not (SigIgn And Not (1 Shl SIGKILL));
   If SigPend=0 Then Exit;
-  For I:=1 To 15 Do If SigPend And (1 Shl I)<>0 Then Begin
-   SigPend:=0;
-   DoExit(Word(I) Shl 8);
+  For I:=1 To NSIG-1 Do If SigPend And (1 Shl I)<>0 Then Begin
+   SigPend:=SigPend And Not (1 Shl I);
+   H:=SigH[I];
+   If (I=SIGKILL) Or (H=0) Or (SigTramp=0) Or (CurUSP<128) Then Begin
+    SigPend:=0;
+    DoExit(I);
+   End;
+   SigH[I]:=0;
+   NSP:=CurUSP-30;
+   For K:=0 To 8 Do MemW[CurUSS:NSP+K*2]:=MemW[CurUSS:CurUSP+K*2];
+   MemW[CurUSS:NSP+18]:=Word(SigTramp);
+   MemW[CurUSS:NSP+20]:=Word(SigTramp Shr 16);
+   MemW[CurUSS:NSP+22]:=MemW[CurUSS:CurUSP+22];
+   MemW[CurUSS:NSP+24]:=I;
+   MemL[CurUSS:NSP+26]:=H;
+   CurUSP:=NSP;
+   Exit;
   End;
  End;
 End;
-
 SegmentEnd;
 
 { ====================================================================== }
@@ -3970,8 +4185,14 @@ Type
  TSysCtx=Record
   RAX,RBX,RCX,RDX,RSI,RDI,RDS,RES: Word;
   Ret,Ret2: Longint;
-  SetDX: Boolean;
+  SetDX, Two: Boolean;   { DX = Ret2 (Two) ou mot haut de Ret }
  End;
+
+Const
+ { ioctl (UNIX V7 et 4.2BSD, sur 16 bits) }
+ TIOCHPCL=$7402; TIOCGETP=$7408; TIOCSETP=$7409; TIOCSETN=$740A;
+ TIOCEXCL=$740D; TIOCNXCL=$740E; TIOCFLUSH=$7410; TIOCSETC=$7411;
+ TIOCGETC=$7412; FIONREAD=$667F;
 
 Var
  { registres de l'appel en cours : sauvegardes avec le processus par Swtch
@@ -3986,6 +4207,11 @@ End;
 Function UStr(Sg, Os: Word): TPath;
 Begin
  UStr:=FarStr(Sg,Os,127);
+End;
+
+Function Suser: Boolean;
+Begin
+ Suser:=Procs[Cur].Uid=0;
 End;
 
 Function GetFile(Fd: Word; Var F: Integer): Integer;
@@ -4006,12 +4232,32 @@ Begin
  End;
 End;
 
+Function ReadDirV7(F: Integer): Integer;
+{ read() d'un repertoire : entrees de 16 octets de UNIX V7 (numero d'inode
+  sur 16 bits, nom de 14 caracteres au plus complete par des nuls) }
+Var Pos,Save,Ino: Longint; Name: TName; Typ: Byte; Done: Word; I: Integer;
+Begin
+ ReadDirV7:=0; Pos:=Files[F].Off; Done:=0;
+ While Done+16<=C.RCX Do Begin
+  Save:=Pos;
+  If Not VReadDir(Files[F].Vn,Pos,Name,Ino,Typ) Then Break;
+  If Word(Ino)=0 Then Ino:=1;
+  MemW[C.RDS:C.RDX+Done]:=Word(Ino);
+  FarFill(C.RDS,C.RDX+Done+2,14,0);
+  For I:=1 To Length(Name) Do
+   If I<=14 Then Mem[C.RDS:C.RDX+Done+1+I]:=Ord(Name[I]);
+  Inc(Done,16);
+ End;
+ Files[F].Off:=Pos; C.Ret:=Done;
+End;
+
 Function SysRead: Integer;
 Var F,N: Integer;
 Begin
  SysRead:=GetFile(C.RBX,F);
  If F=0 Then Exit;
  If Files[F].Flags And O_ACCMODE=O_WRONLY Then Begin SysRead:=EBADF; Exit End;
+ If VNodes[Files[F].Vn].Typ=VDIR Then Begin SysRead:=ReadDirV7(F); Exit End;
  N:=VRead(Files[F].Vn,Files[F].Off,C.RDS,C.RDX,C.RCX);
  If N<0 Then Begin SysRead:=-N; Exit End;
  Inc(Files[F].Off,N); C.Ret:=N; SysRead:=0;
@@ -4029,21 +4275,34 @@ Begin
  Inc(Files[F].Off,N); C.Ret:=N; SysWrite:=0;
 End;
 
-Function SysOpen(Path: TPath; Flags: Word): Integer;
-Var E,Vn,D,F,Fd: Integer; Last: TName;
+Function SysOpen(Path: TPath; Flags, Mode: Word): Integer;
+{ open (drapeaux de 4.2BSD) et creat; mode de creation filtre par umask }
+Var E,Vn,D,F,Fd: Integer; Last: TName; Want: Word; Created: Boolean;
 Begin
+ Created:=False;
  E:=Namei(Path,Vn);
  If (E=ENOENT) And (Flags And O_CREAT<>0) Then Begin
   E:=NameiParent(Path,D,Last);
   If E=0 Then Begin
-   E:=VCreate(D,Last,False,Vn);
+   E:=VAccess(D,3);
+   If E=0 Then E:=VCreate(D,Last,False,Mode,Vn);
    VPut(D);
+   Created:=E=0;
   End;
  End Else If (E=0) And (Flags And O_CREAT<>0) And (Flags And O_EXCL<>0) Then
  Begin
   VPut(Vn); E:=EEXIST;
  End;
  If E<>0 Then Begin SysOpen:=E; Exit End;
+ If Not Created Then Begin
+  Case Flags And O_ACCMODE Of
+   O_RDONLY: Want:=4;
+   O_WRONLY: Want:=2;
+   Else Want:=6;
+  End;
+  E:=VAccess(Vn,Want);
+  If E<>0 Then Begin VPut(Vn); SysOpen:=E; Exit End;
+ End;
  If (VNodes[Vn].Typ=VDIR) And (Flags And O_ACCMODE<>O_RDONLY) Then Begin
   VPut(Vn); SysOpen:=EISDIR; Exit;
  End;
@@ -4067,43 +4326,51 @@ Begin
 End;
 
 Procedure FillStat(Vn: Integer; Sg, Os: Word);
+{ struct stat de UNIX V7 (30 octets) : st_dev, st_ino, st_mode, st_nlink,
+  st_uid, st_gid, st_rdev, st_size (32 bits), st_atime, st_mtime,
+  st_ctime }
 Begin
- FarFill(Sg,Os,32,0);
+ FarFill(Sg,Os,30,0);
  With VNodes[Vn] Do Begin
   MemW[Sg:Os]:=Mnt;
-  MemL[Sg:Os+2]:=Ino;
-  MemW[Sg:Os+6]:=Mode;
-  MemW[Sg:Os+8]:=NLink;
-  MemW[Sg:Os+14]:=Minor;
-  MemL[Sg:Os+16]:=Size;
-  MemL[Sg:Os+20]:=MTime; MemL[Sg:Os+24]:=MTime; MemL[Sg:Os+28]:=MTime;
+  If Word(Ino)=0 Then MemW[Sg:Os+2]:=1 Else MemW[Sg:Os+2]:=Word(Ino);
+  MemW[Sg:Os+4]:=Mode;
+  MemW[Sg:Os+6]:=NLink;
+  MemW[Sg:Os+8]:=Uid;
+  MemW[Sg:Os+10]:=Gid;
+  If Typ=VCHR Then MemW[Sg:Os+12]:=Minor;
+  MemL[Sg:Os+14]:=Size;
+  MemL[Sg:Os+18]:=MTime; MemL[Sg:Os+22]:=MTime; MemL[Sg:Os+26]:=MTime;
  End;
 End;
 
-Function SysGetDents: Integer;
+Function SysGetDirEntries: Integer;
+{ getdirentries (4.4BSD) : struct dirent = d_fileno (32 bits), d_reclen
+  (16 bits), d_type, d_namlen, d_name termine par un nul, longueur arrondie
+  a un multiple de 4 }
 Var F,Vn: Integer; Pos,Save,Ino: Longint; Name: TName; Typ: Byte;
   Done,RecLen: Word; I: Integer;
 Begin
- SysGetDents:=GetFile(C.RBX,F);
+ SysGetDirEntries:=GetFile(C.RBX,F);
  If F=0 Then Exit;
  Vn:=Files[F].Vn;
- If VNodes[Vn].Typ<>VDIR Then Begin SysGetDents:=ENOTDIR; Exit End;
+ If VNodes[Vn].Typ<>VDIR Then Begin SysGetDirEntries:=ENOTDIR; Exit End;
  Pos:=Files[F].Off; Done:=0;
  Repeat
   Save:=Pos;
   If Not VReadDir(Vn,Pos,Name,Ino,Typ) Then Break;
-  RecLen:=(8+Length(Name)+1+1) And $FFFE;
+  RecLen:=(8+Length(Name)+1+3) And $FFFC;
   If Done+RecLen>C.RCX Then Begin
    Pos:=Save;
-   If Done=0 Then Begin SysGetDents:=EINVAL; Exit End;
+   If Done=0 Then Begin SysGetDirEntries:=EINVAL; Exit End;
    Break;
   End;
+  FarFill(C.RDS,C.RDX+Done,RecLen,0);
   MemL[C.RDS:C.RDX+Done]:=Ino;
   MemW[C.RDS:C.RDX+Done+4]:=RecLen;
   Mem[C.RDS:C.RDX+Done+6]:=Typ;
   Mem[C.RDS:C.RDX+Done+7]:=Length(Name);
   For I:=1 To Length(Name) Do Mem[C.RDS:C.RDX+Done+7+I]:=Ord(Name[I]);
-  Mem[C.RDS:C.RDX+Done+8+Length(Name)]:=0;
   Inc(Done,RecLen);
  Until False;
  Files[F].Off:=Pos;
@@ -4129,34 +4396,57 @@ Begin
  Files[F].Off:=O; C.Ret:=O; C.SetDX:=True;
 End;
 
+Function Owner(Vn: Integer): Integer;
+{ EPERM si le processus n'est ni proprietaire de Vn ni super-utilisateur }
+Begin
+ If Suser Or (VNodes[Vn].Uid=Procs[Cur].Uid) Then Owner:=0 Else Owner:=EPERM;
+End;
+
 Function SysPathOp(Op: Integer): Integer;
-{ unlink (10), mkdir (39), rmdir (40), chdir (12), chmod (15) }
-Var E,D,Vn: Integer; Last: TName; P: TPath;
+{ unlink (10), chdir (12), mknod (14), chmod (15), chown (16), utime (30),
+  access (33), mkdir (136), rmdir (137) }
+Var E,D,Vn: Integer; Last: TName; P: TPath; T: Longint;
 Begin
  P:=UStr(C.RDS,C.RDX);
  Case Op Of
-  10,39,40: Begin
+  10,14,136,137: Begin
    E:=NameiParent(P,D,Last);
    If E=0 Then Begin
-    Case Op Of
+    E:=VAccess(D,3);
+    If E=0 Then Case Op Of
      10: E:=VRemove(D,Last,False);
-     39: Begin E:=VCreate(D,Last,True,Vn); If E=0 Then VPut(Vn) End;
-     40: E:=VRemove(D,Last,True);
+     137: E:=VRemove(D,Last,True);
+     136: Begin E:=VCreate(D,Last,True,C.RCX,Vn); If E=0 Then VPut(Vn) End;
+     14: Case C.RCX And S_IFMT Of
+          S_IFDIR: Begin E:=VCreate(D,Last,True,C.RCX,Vn); If E=0 Then VPut(Vn) End;
+          0,S_IFREG: Begin E:=VCreate(D,Last,False,C.RCX,Vn); If E=0 Then VPut(Vn) End;
+          Else If Suser Then E:=EINVAL Else E:=EPERM;
+         End;
     End;
     VPut(D);
    End;
   End;
-  12: Begin
+  Else Begin
    E:=Namei(P,Vn);
-   If E=0 Then Begin
-    If VNodes[Vn].Typ<>VDIR Then E:=ENOTDIR
-    Else Procs[Cur].Cwd:=NormPath(Procs[Cur].Cwd,P);
-    VPut(Vn);
+   If E<>0 Then Begin SysPathOp:=E; Exit End;
+   Case Op Of
+    12: If VNodes[Vn].Typ<>VDIR Then E:=ENOTDIR
+        Else Begin
+         E:=VAccess(Vn,1);
+         If E=0 Then Procs[Cur].Cwd:=NormPath(Procs[Cur].Cwd,P);
+        End;
+    15: Begin E:=Owner(Vn); If E=0 Then E:=VChmod(Vn,C.RCX) End;
+    16: If Not Suser Then E:=EPERM Else E:=VChown(Vn,C.RBX,C.RCX);
+    30: Begin
+         { utime(nom, temps) : temps = (acces, modification), ou 0 = maintenant }
+         If (C.RES=0) And (C.RDI=0) Then Begin
+          T:=KTime; E:=Owner(Vn); If E<>0 Then E:=VAccess(Vn,2);
+         End Else Begin T:=MemL[C.RES:C.RDI+4]; E:=Owner(Vn) End;
+         If E=0 Then E:=VUtime(Vn,T);
+        End;
+    33: If C.RBX And 7<>0 Then E:=VAccess(Vn,C.RBX And 7);
    End;
-  End;
-  15: Begin
-   E:=Namei(P,Vn);
-   If E=0 Then Begin E:=VChmod(Vn,C.RCX); VPut(Vn) End;
+   VPut(Vn);
   End;
  End;
  SysPathOp:=E;
@@ -4168,47 +4458,84 @@ Begin
  P1:=UStr(C.RDS,C.RDX); P2:=UStr(C.RES,C.RDI);
  E:=NameiParent(P2,D2,L2);
  If E<>0 Then Begin SysRename:=E; Exit End;
+ E:=VAccess(D2,3);
+ If E<>0 Then Begin VPut(D2); SysRename:=E; Exit End;
  If Link Then Begin
   E:=Namei(P1,Vn);
   If E=0 Then Begin E:=VLink(D2,L2,Vn); VPut(Vn) End;
  End Else Begin
   E:=NameiParent(P1,D1,L1);
-  If E=0 Then Begin E:=VRename(D1,L1,D2,L2); VPut(D1) End;
+  If E=0 Then Begin
+   E:=VAccess(D1,3);
+   If E=0 Then E:=VRename(D1,L1,D2,L2);
+   VPut(D1);
+  End;
  End;
  VPut(D2);
  SysRename:=E;
 End;
 
 Function SysKill: Integer;
+{ kill(pid, sig) : pid > 0 un processus, 0 tous ceux de l'utilisateur
+  (le terminal est commun), -1 tous sauf init et l'appelant; sig = 0 :
+  verification seulement. Un utilisateur ordinaire ne peut signaler que
+  ses propres processus. }
 Var I,P,N: Integer;
 Begin
  SysKill:=0; N:=0;
- If Integer(C.RBX)=-1 Then Begin
+ If (C.RCX<0) Or (C.RCX>=NSIG) Then Begin SysKill:=EINVAL; Exit End;
+ If (Integer(C.RBX)=-1) Or (C.RBX=0) Then Begin
   For I:=1 To NPROC-1 Do
-   If (Procs[I].Stat In [PRUN,PSLEEP]) And (Procs[I].Pid>1) And (I<>Cur) Then
-   Begin PostSig(I,C.RCX); Inc(N) End;
+   If (Procs[I].Stat In [PRUN,PSLEEP]) And (Procs[I].Pid>1) And
+     ((I<>Cur) Or (C.RBX=0)) And
+     (Suser Or (Procs[I].Uid=Procs[Cur].Uid)) Then
+   Begin If C.RCX<>0 Then PostSig(I,C.RCX); Inc(N) End;
   If N=0 Then SysKill:=ESRCH;
   Exit;
  End;
  P:=FindPid(C.RBX);
  If (P<0) Or (Procs[P].Stat=PZOMB) Then Begin SysKill:=ESRCH; Exit End;
+ If Not Suser And (Procs[P].Uid<>Procs[Cur].Uid) Then Begin
+  SysKill:=EPERM; Exit;
+ End;
  If C.RCX<>0 Then PostSig(P,C.RCX);
 End;
 
 Function SysIoctl: Integer;
-Var F: Integer; IsTty: Boolean;
+{ ioctl(fd, requete, DS:DX argument) : sgttyb et tchars de UNIX V7 pour la
+  console, FIONREAD (4.2BSD) pour la console, les tubes et les fichiers }
+Var F,Vn: Integer; IsTty: Boolean; I: Integer; N: Longint;
 Begin
  SysIoctl:=GetFile(C.RBX,F);
  If F=0 Then Exit;
- IsTty:=(VNodes[Files[F].Vn].Typ=VCHR) And (VNodes[Files[F].Vn].Minor=DEVTTY);
+ Vn:=Files[F].Vn;
+ IsTty:=(VNodes[Vn].Typ=VCHR) And (VNodes[Vn].Minor=DEVTTY);
+ If C.RCX=FIONREAD Then Begin
+  If IsTty Then N:=TtyAvail
+  Else If VNodes[Vn].Typ=VFIFO Then N:=PipeCount[VNodes[Vn].Minor]
+  Else If VNodes[Vn].Typ=VREG Then N:=VNodes[Vn].Size-Files[F].Off
+  Else N:=0;
+  If N>$7FFF Then N:=$7FFF;
+  If N<0 Then N:=0;
+  MemW[C.RDS:C.RDX]:=N;
+  Exit;
+ End;
+ If Not IsTty Then Begin SysIoctl:=ENOTTY; Exit End;
  Case C.RCX Of
-  0: If IsTty Then C.Ret:=1 Else C.Ret:=0;
-  1: If IsTty Then C.Ret:=TtyMode Else SysIoctl:=ENOTTY;
-  2: If IsTty Then Begin
-      TtyMode:=C.RDX And 3;
-      If TtyMode And TTYRAW<>0 Then Procs[Cur].RawKbd:=True;
-     End Else SysIoctl:=ENOTTY;
-  3: If IsTty Then C.Ret:=TtyAvail Else SysIoctl:=ENOTTY;
+  TIOCGETP: Begin
+   Mem[C.RDS:C.RDX]:=13; Mem[C.RDS:C.RDX+1]:=13;   { B9600 }
+   Mem[C.RDS:C.RDX+2]:=Ord(TtyErase); Mem[C.RDS:C.RDX+3]:=Ord(TtyKill);
+   MemW[C.RDS:C.RDX+4]:=TtyFlags;
+  End;
+  TIOCSETP,TIOCSETN: Begin
+   TtyErase:=Chr(Mem[C.RDS:C.RDX+2]); TtyKill:=Chr(Mem[C.RDS:C.RDX+3]);
+   TtyFlags:=MemW[C.RDS:C.RDX+4];
+   If C.RCX=TIOCSETP Then TtyFlush;
+  End;
+  TIOCGETC: For I:=0 To 5 Do Mem[C.RDS:C.RDX+I]:=Ord(TChars[I]);
+  TIOCSETC: For I:=0 To 5 Do TChars[I]:=Chr(Mem[C.RDS:C.RDX+I]);
+  TIOCFLUSH: TtyFlush;
+  TIOCHPCL,TIOCEXCL,TIOCNXCL: ;
   Else SysIoctl:=EINVAL;
  End;
 End;
@@ -4235,6 +4562,8 @@ Begin
   MemW[C.RDS:C.RDX+6]:=Size;
   MemL[C.RDS:C.RDX+8]:=CpuTicks;
   PutPStr(C.RDS,C.RDX+12,Name,15);
+  MemW[C.RDS:C.RDX+28]:=Uid;
+  MemW[C.RDS:C.RDX+30]:=Gid;
  End;
  C.Ret:=1;
 End;
@@ -4260,36 +4589,127 @@ Begin
  C.Ret:=1;
 End;
 
+Function Hz60(T: Longint): Longint;
+{ tops d'horloge (18,2 Hz) -> soixantiemes de seconde (HZ de UNIX V7) }
+Begin
+ Hz60:=(T Div 91)*300+((T Mod 91)*300) Div 91;
+End;
+
+Function Shared(P: Integer): Boolean;
+{ l'image de P est partagee (vfork, ou fork dont l'autre image est
+  echangee a la meme adresse) }
+Var I: Integer;
+Begin
+ Shared:=Procs[P].Borrowed;
+ For I:=1 To NPROC-1 Do
+  If (I<>P) And (Procs[I].Stat<>PFREE) And (Procs[I].Size<>0) And
+    (Procs[I].Home=Procs[P].Home) Then Shared:=True;
+End;
+
+Function SysBreak: Integer;
+{ break (UNIX V7) : BX = nouvelle fin de l'image (paragraphe absolu; 0 =
+  fin actuelle), rendue dans AX. L'image d'un processus 8086 n'est pas
+  deplacable : elle s'agrandit sur place si la memoire qui la suit est
+  libre (sinon ENOMEM), et peut rendre sa fin au systeme. }
+Var Fin: Word;
+Begin
+ SysBreak:=0;
+ With Procs[Cur] Do Begin
+  Fin:=Home+Size; C.Ret:=Fin;
+  If C.RBX=0 Then Exit;
+  If C.RBX>Fin Then Begin
+   If Shared(Cur) Or Not CoreGrow(Fin,C.RBX-Fin) Then Begin
+    SysBreak:=ENOMEM; Exit;
+   End;
+  End Else Begin
+   If C.RBX<PSP+16 Then Begin SysBreak:=EINVAL; Exit End;
+   If Shared(Cur) Then Begin SysBreak:=ENOMEM; Exit End;
+   CoreFree(C.RBX,Fin-C.RBX);
+  End;
+  Size:=C.RBX-Home; C.Ret:=C.RBX;
+ End;
+End;
+
+Function SysWait: Integer;
+Var St: Word; R: Integer;
+Begin
+ SysWait:=0;
+ R:=DoWait(Integer(C.RBX),C.RCX,St);
+ If R<0 Then SysWait:=-R
+ Else Begin C.Ret:=R; C.Ret2:=St; C.SetDX:=True; C.Two:=True End;
+End;
+
+Function SysExec(Env: Boolean): Integer;
+{ exec (11) : DS:DX nom, ES:DI argv; exece (59) : et SI:CX envp }
+Var P: TPath; E: Integer;
+Begin
+ P:=UStr(C.RDS,C.RDX);
+ If Env Then E:=GatherArgs(C.RES,C.RDI,C.RSI,C.RCX)
+ Else E:=GatherArgs(C.RES,C.RDI,0,0);
+ If E=0 Then E:=DoExec(P);
+ SysExec:=E;
+End;
+
+Function SysDup2(Fd, Fd2: Word): Integer;
+Var E,F: Integer;
+Begin
+ E:=GetFile(Fd,F);
+ If (F<>0) And (Fd2>=NOFILE) Then E:=EBADF;
+ If (E=0) And (Fd<>Fd2) Then Begin
+  If Procs[Cur].Fd[Fd2]<>0 Then FClose(Procs[Cur].Fd[Fd2]);
+  Procs[Cur].Fd[Fd2]:=F; FRef(F);
+ End;
+ C.Ret:=Fd2; SysDup2:=E;
+End;
+
+Function SysSignal: Integer;
+{ signal(sig, action) : CX:DX = action (0 = SIG_DFL, 1 = SIG_IGN, sinon
+  adresse FAR du gestionnaire, appele par la trampoline de la libc);
+  DX:AX = action precedente }
+Var H: Longint;
+Begin
+ SysSignal:=0;
+ If (C.RBX<1) Or (C.RBX>=NSIG) Or (C.RBX=SIGKILL) Then Begin
+  SysSignal:=EINVAL; Exit;
+ End;
+ With Procs[Cur] Do Begin
+  C.Ret:=SigH[C.RBX]; C.SetDX:=True;
+  H:=Longint(C.RDX) Shl 16+C.RCX;
+  SigH[C.RBX]:=H;
+  If H=1 Then Begin
+   SigIgn:=SigIgn Or (1 Shl C.RBX);
+   SigPend:=SigPend And Not (1 Shl C.RBX);
+  End Else SigIgn:=SigIgn And Not (1 Shl C.RBX);
+ End;
+End;
+
 Procedure SysDispatch;
-Var E,F,Fd,R,W,I: Integer; St: Word; P: TPath; Vn: Integer;
+Var E,F,Fd,R,W,I: Integer; P: TPath; Vn: Integer; T: Longint;
 Begin
  C.RAX:=UserW(0); C.RBX:=UserW(2); C.RCX:=UserW(4); C.RDX:=UserW(6);
  C.RSI:=UserW(8); C.RDI:=UserW(10); C.RES:=UserW(14); C.RDS:=UserW(16);
- E:=0; C.Ret:=0; C.Ret2:=0; C.SetDX:=False;
+ E:=0; C.Ret:=0; C.Ret2:=0; C.SetDX:=False; C.Two:=False;
  Case C.RAX Of
-  1: DoExit(C.RBX);
+  1: DoExit((C.RBX And $FF) Shl 8);
   2: Begin C.Ret:=DoFork; If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End End;
-  190: Begin C.Ret:=DoVFork; If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End End;
   3: E:=SysRead;
   4: E:=SysWrite;
-  5: E:=SysOpen(UStr(C.RDS,C.RDX),C.RBX);
+  5: E:=SysOpen(UStr(C.RDS,C.RDX),C.RBX,C.RCX);
   6: E:=SysClose;
-  7: Begin
-      C.Ret:=DoWait(Integer(C.RBX),C.RCX,St);
-      If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End
-      Else Begin C.Ret2:=St; C.SetDX:=True; C.Ret:=C.Ret And $FFFF End;
-     End;
-  8: E:=SysOpen(UStr(C.RDS,C.RDX),O_WRONLY Or O_CREAT Or O_TRUNC);
+  7: E:=SysWait;
+  8: E:=SysOpen(UStr(C.RDS,C.RDX),O_WRONLY Or O_CREAT Or O_TRUNC,C.RCX);
   9: E:=SysRename(True);
-  10,12,15,39,40: E:=SysPathOp(C.RAX);
-  11: Begin
-       If C.RCX=0 Then C.RCX:=SizeOf(KArgs)-2;
-       E:=DoExec(UStr(C.RDS,C.RDX),C.RES,C.RDI,C.RCX);
-      End;
+  10,12,14,15,16,30,33,136,137: E:=SysPathOp(C.RAX);
+  11: E:=SysExec(False);
   13: Begin C.Ret:=KTime; C.SetDX:=True End;
+  17: E:=SysBreak;
+  18: Begin
+       E:=Namei(UStr(C.RDS,C.RDX),Vn);
+       If E=0 Then Begin FillStat(Vn,C.RES,C.RDI); VPut(Vn) End;
+      End;
   19: E:=SysLSeek;
-  20: C.Ret:=Procs[Cur].Pid;
-  21: Begin
+  20: Begin C.Ret:=Procs[Cur].Pid; C.Ret2:=Procs[Cur].PPid; C.SetDX:=True; C.Two:=True End;
+  21: If Not Suser Then E:=EPERM Else Begin
        E:=Namei(UStr(C.RES,C.RDI),Vn);
        If E=0 Then Begin
         If VNodes[Vn].Typ<>VDIR Then E:=ENOTDIR;
@@ -4297,13 +4717,43 @@ Begin
        End;
        If E=0 Then E:=DoMount(UStr(C.RDS,C.RDX),UStr(C.RES,C.RDI),C.RBX);
       End;
-  22: E:=DoUmount(UStr(C.RDS,C.RDX));
-  24: C.Ret:=0;
+  22: If Not Suser Then E:=EPERM Else E:=DoUmount(UStr(C.RDS,C.RDX));
+  23: If Suser Or (C.RBX=Procs[Cur].Uid) Then Procs[Cur].Uid:=C.RBX Else E:=EPERM;
+  24: Begin C.Ret:=Procs[Cur].Uid; C.Ret2:=Procs[Cur].Uid; C.SetDX:=True; C.Two:=True End;
+  25: If Not Suser Then E:=EPERM Else
+       BootTime:=(Longint(C.RCX) Shl 16+C.RBX)-(Ticks*10) Div 182;
+  27: With Procs[Cur] Do Begin
+       If Alarm<>0 Then C.Ret:=((Alarm-Ticks)*10+181) Div 182 Else C.Ret:=0;
+       If C.RBX=0 Then Alarm:=0
+       Else Alarm:=Ticks+(Longint(C.RBX)*182) Div 10+1;
+      End;
+  28: Begin
+       E:=GetFile(C.RBX,F);
+       If F<>0 Then FillStat(Files[F].Vn,C.RES,C.RDI);
+      End;
   29: If Not SleepIntr(CHPAUSE+Cur) Then E:=EINTR;
+  31,32: Begin
+       { stty/gtty (V7) : comme ioctl TIOCSETP/TIOCGETP }
+       If C.RAX=31 Then C.RCX:=TIOCSETP Else C.RCX:=TIOCGETP;
+       E:=SysIoctl;
+      End;
+  34: With Procs[Cur] Do
+       If (Integer(C.RBX)<0) And Not Suser Then E:=EPERM
+       Else Begin
+        Nice:=Nice+Integer(C.RBX);
+        If Nice>20 Then Nice:=20; If Nice<-20 Then Nice:=-20;
+       End;
+  35: Begin
+       { ftime : struct timeb (time, millitm, timezone, dstflag) }
+       MemL[C.RDS:C.RDX]:=KTime;
+       MemW[C.RDS:C.RDX+4]:=Word(((Ticks*10) Mod 182)*1000 Div 182);
+       MemW[C.RDS:C.RDX+6]:=0; MemW[C.RDS:C.RDX+8]:=0;
+      End;
   36: C.Ret:=0;
   37: E:=SysKill;
-  38: E:=SysRename(False);
-  41: Begin
+  39: C.Ret:=Procs[Cur].PPid;
+  41: If C.RBX And $40<>0 Then E:=SysDup2(C.RBX And $3F,C.RCX)
+      Else Begin
        E:=GetFile(C.RBX,F);
        If F<>0 Then Begin
         Fd:=NewFd(F); If Fd<0 Then E:=EMFILE Else Begin FRef(F); C.Ret:=Fd End;
@@ -4318,31 +4768,23 @@ Begin
          C.Ret:=Fd; Fd:=NewFd(W);
          If Fd<0 Then Begin
           Procs[Cur].Fd[C.Ret]:=0; FClose(R); FClose(W); E:=EMFILE;
-         End Else Begin C.Ret2:=Fd; C.SetDX:=True End;
+         End Else Begin C.Ret2:=Fd; C.SetDX:=True; C.Two:=True End;
         End;
        End;
       End;
-  45: C.Ret:=Procs[Cur].Size;
-  48: Begin
-       If (C.RBX<1) Or (C.RBX>15) Or (C.RBX=SIGKILL) Then E:=EINVAL
-       Else Begin
-        C.Ret:=Ord(Procs[Cur].SigIgn And (1 Shl C.RBX)<>0);
-        If C.RCX=1 Then Procs[Cur].SigIgn:=Procs[Cur].SigIgn Or (1 Shl C.RBX)
-        Else Procs[Cur].SigIgn:=Procs[Cur].SigIgn And Not (1 Shl C.RBX);
-       End;
+  43: Begin
+       { times : struct tms en soixantiemes de seconde }
+       MemL[C.RDS:C.RDX]:=Hz60(Procs[Cur].CpuTicks);
+       MemL[C.RDS:C.RDX+4]:=0;
+       MemL[C.RDS:C.RDX+8]:=Hz60(Procs[Cur].ChildTicks);
+       MemL[C.RDS:C.RDX+12]:=0;
+       C.Ret:=Hz60(Ticks); C.SetDX:=True;
       End;
+  46: If Suser Or (C.RBX=Procs[Cur].Gid) Then Procs[Cur].Gid:=C.RBX Else E:=EPERM;
+  47: Begin C.Ret:=Procs[Cur].Gid; C.Ret2:=Procs[Cur].Gid; C.SetDX:=True; C.Two:=True End;
+  48: E:=SysSignal;
   54: E:=SysIoctl;
-  63: Begin
-       E:=GetFile(C.RBX,F);
-       If (F<>0) And (C.RCX>=NOFILE) Then E:=EBADF;
-       If (E=0) And (C.RBX<>C.RCX) Then Begin
-        If Procs[Cur].Fd[C.RCX]<>0 Then FClose(Procs[Cur].Fd[C.RCX]);
-        Procs[Cur].Fd[C.RCX]:=F; FRef(F);
-       End;
-       C.Ret:=C.RCX;
-      End;
-  64: C.Ret:=Procs[Cur].PPid;
-  88: Begin
+  55: If Not Suser Then E:=EPERM Else Begin
        KPrintLn('Redemarrage du systeme...');
        Asm
         CLI
@@ -4353,34 +4795,20 @@ Begin
         DW 0000h,0FFFFh
        End;
       End;
-  106,108: Begin
-       If C.RAX=106 Then E:=Namei(UStr(C.RDS,C.RDX),Vn)
-       Else Begin
-        E:=GetFile(C.RBX,F);
-        If F<>0 Then Begin Vn:=Files[F].Vn; VRef(Vn) End;
-       End;
-       If E=0 Then Begin FillStat(Vn,C.RES,C.RDI); VPut(Vn) End;
-      End;
-  122: Begin
+  57: Begin
+       { uname : 5 champs de 16 octets (chaines Pascal) }
        PutPStr(C.RDS,C.RDX,'UNIX-0',15);
        PutPStr(C.RDS,C.RDX+16,'unix0',15);
        PutPStr(C.RDS,C.RDX+32,KVersion,15);
        PutPStr(C.RDS,C.RDX+48,'2026',15);
        PutPStr(C.RDS,C.RDX+64,'i8086',15);
       End;
-  141: E:=SysGetDents;
-  158: RunRun:=True;
-  162: Begin
-       Procs[Cur].Wake:=Ticks+(Longint(C.RBX)*182) Div 10+1;
-       If Not SleepIntr(CHSLEEP) Then E:=EINTR;
-       Procs[Cur].Wake:=0;
-      End;
-  183: Begin
-       P:=Procs[Cur].Cwd;
-       If Length(P)+1>C.RCX Then E:=ERANGE
-       Else PutFarStr(C.RDS,C.RDX,P);
-       C.Ret:=Length(P);
-      End;
+  59: E:=SysExec(True);
+  60: Begin C.Ret:=Procs[Cur].Umask; Procs[Cur].Umask:=C.RBX And $1FF End;
+  66: Begin C.Ret:=DoVFork; If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End End;
+  90: E:=SysDup2(C.RBX,C.RCX);
+  128: E:=SysRename(False);
+  156: E:=SysGetDirEntries;
   200: E:=SysProcInfo;
   201: Begin
        Procs[Cur].DosOfs:=C.RBX; Procs[Cur].DosSeg:=C.RCX;
@@ -4396,14 +4824,31 @@ Begin
        MemW[C.RDS:C.RDX+10]:=NPROC-1;
       End;
   203: E:=SysMountInfo;
-  Else E:=ENOSYS;
+  204: Procs[Cur].SigTramp:=Longint(C.RCX) Shl 16+C.RBX;
+  205: Begin
+       P:=Procs[Cur].Cwd;
+       If Length(P)+1>C.RCX Then E:=ERANGE
+       Else PutFarStr(C.RDS,C.RDX,P);
+       C.Ret:=Length(P);
+      End;
+  206: Begin
+       { nap(ms) : sommeil en millisecondes (interruptible) }
+       Procs[Cur].Wake:=Ticks+(Longint(C.RBX)*182+9999) Div 10000;
+       If Procs[Cur].Wake=Ticks Then Inc(Procs[Cur].Wake);
+       If Not SleepIntr(CHSLEEP) Then E:=EINTR;
+       Procs[Cur].Wake:=0;
+      End;
+  Else Begin
+   { appel inexistant : SIGSYS (comme UNIX V7) }
+   E:=EINVAL; PostSig(Cur,SIGSYS);
+  End;
  End;
  If E<>0 Then Begin
   SetUserW(0,E); SetUserW(22,UserW(22) Or 1);
  End Else Begin
   SetUserW(0,Word(C.Ret)); SetUserW(22,UserW(22) And $FFFE);
   If C.SetDX Then Begin
-   If C.RAX In [7,42] Then SetUserW(6,Word(C.Ret2)) Else SetUserW(6,Word(C.Ret Shr 16));
+   If C.Two Then SetUserW(6,Word(C.Ret2)) Else SetUserW(6,Word(C.Ret Shr 16));
   End;
  End;
  CheckSignals;
@@ -4431,7 +4876,6 @@ SegmentEnd;
 { ====================================================================== }
 
 Var
- InitArgs: Array[0..63] Of Char;
  MbrBuf: Array[0..511] Of Byte;
 
 Procedure ProbeDisks;
@@ -4507,22 +4951,19 @@ End;
 
 Procedure StartInit;
 { processus 1 : /etc/init (ou /bin/sh) }
-Var P,Fd,F,Vn,E,L: Integer; Path: String;
+Var P,Fd,F,Vn,E: Integer; Path: String;
 
- Procedure SetArgs(A: String);
+ Procedure Add(A: String);
  Var I: Integer;
  Begin
-  For I:=1 To Length(A) Do InitArgs[I-1]:=A[I];
-  InitArgs[Length(A)]:=#0; InitArgs[Length(A)+1]:=#0;
-  { env : PATH et HOME }
-  L:=Length(A)+2;
-  A:='PATH=/bin:/usr/bin';
-  For I:=1 To Length(A) Do InitArgs[L+I-1]:=A[I];
-  Inc(L,Length(A)); InitArgs[L]:=#0; Inc(L);
-  A:='HOME=/';
-  For I:=1 To Length(A) Do InitArgs[L+I-1]:=A[I];
-  Inc(L,Length(A)); InitArgs[L]:=#0; Inc(L);
-  InitArgs[L]:=#0; Inc(L);
+  For I:=1 To Length(A) Do KArgs[KArgLen+I-1]:=A[I];
+  Inc(KArgLen,Length(A)); KArgs[KArgLen]:=#0; Inc(KArgLen);
+ End;
+
+ Procedure SetArgs(A: String);
+ Begin
+  KArgLen:=0; KArgc:=1; KEnvc:=2;
+  Add(A); Add('PATH=/bin:/usr/bin'); Add('HOME=/');
  End;
 
 Begin
@@ -4530,6 +4971,7 @@ Begin
  FillChar(Procs[P].Fd,SizeOf(Procs[P].Fd),0);
  Procs[P].Pid:=1; Procs[P].PPid:=0; Procs[P].Cwd:='/';
  Procs[P].Name:='init'; Procs[P].Size:=0;
+ Procs[P].Umask:=$12;                       { 022 }
  Procs[P].Stat:=PSLEEP;
  Cur:=P;
  { descripteurs 0, 1 et 2 : la console }
@@ -4539,10 +4981,10 @@ Begin
  Procs[P].Fd[0]:=F; Procs[P].Fd[1]:=F; Procs[P].Fd[2]:=F;
  FRef(F); FRef(F);
  Path:='/etc/init'; SetArgs(Path);
- E:=DoExec(Path,Seg(InitArgs),Ofs(InitArgs),L);
+ E:=DoExec(Path);
  If E<>0 Then Begin
   Path:='/bin/sh'; SetArgs(Path);
-  E:=DoExec(Path,Seg(InitArgs),Ofs(InitArgs),L);
+  E:=DoExec(Path);
  End;
  If E<>0 Then Panic('impossible de lancer /etc/init ou /bin/sh (erreur '+
    IntStr(E)+')');
@@ -4600,7 +5042,7 @@ BEGIN
  ShowDisks;
  { vecteurs d'interruption }
  SysHook:=@SysDispatch; PreemptHook:=@PreemptEntry; FaultHook:=@FaultEntry;
- KSysInit;
+ KSysInit; TtyInit;
  IdleHook:=@TtyPoll;
  OldInt08:=GetVector($08); OldInt1B:=GetVector($1B);
  SetVector($80,Seg(Int80Stub),Ofs(Int80Stub));

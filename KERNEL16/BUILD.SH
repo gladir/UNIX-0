@@ -10,11 +10,13 @@
 #     (sinon les fichiers BOOTSECT.BIN et MBR.BIN deja fournis sont utilises);
 #  3. compile le noyau : UPC /K KERNEL.PAS -> KERNEL.SYS (copie sous le nom
 #     UNIX a la racine des disques);
-#  4. compile /etc/init et toutes les commandes UNIX-0 du depot (*.PAS) avec
-#     UPC /X (appels systeme UNIX-0);
+#  4. compile /etc/init, les programmes systeme de KERNEL16/USR (sh, getty,
+#     login, passwd, ps, kill, id, mkdir, rmdir, rm) et toutes les commandes
+#     UNIX-0 du depot (*.PAS) avec UPC /X (appels systeme UNIX-0); le SH du
+#     depot (interpreteur de style DOS) est installe sous le nom /bin/shdos;
 #  5. fabrique les images :
 #       IMAGES/UNIX0-144.IMG  disquette 1,44 Mo FAT12 (commandes essentielles)
-#       IMAGES/UNIX0-288.IMG  disquette 2,88 Mo FAT12 (toutes les commandes)
+#       IMAGES/UNIX0-288.IMG  disquette 2,88 Mo FAT12 (commandes, sauf bash/csh/ksh)
 #       IMAGES/UNIX0-HD.IMG   disque dur : partition 1 FAT16 amorcable (racine)
 #                             et partition 2 UFS1 (FreeBSD) montee sur /usr
 #                             (makefs -t ffs, s'il est present).
@@ -52,7 +54,7 @@ cp "$HERE/KERNEL.PAS" "$W/src/"
 ( cd "$W/src" && "$UPC" /K KERNEL.PAS ) | tail -2
 
 echo "== Programmes (UPC /X)"
-cp "$ROOT"/*.PAS "$HERE/INIT.PAS" "$W/src/"
+cp "$ROOT"/*.PAS "$HERE/INIT.PAS" "$HERE"/USR/*.PAS "$HERE"/USR/*.INC "$W/src/"
 fail=0
 for f in "$W"/src/*.PAS; do
   n=$(basename "$f" .PAS)
@@ -73,22 +75,56 @@ mkroot() {   # mkroot REPERTOIRE LISTE_DE_COMMANDES
   rm -rf "$d"; mkdir -p "$d/bin" "$d/etc" "$d/dev" "$d/tmp" "$d/usr" "$d/mnt" "$d/home"
   cp "$W/src/KERNEL.SYS" "$d/UNIX"
   cp "$W/src/INIT" "$d/etc/init"
+  cp "$W/src/GETTY" "$d/etc/getty"
   printf 'Bienvenue sous UNIX-0 !\n' > "$d/etc/motd"
-  printf 'root::0:0:root:/:/bin/sh\n' > "$d/etc/passwd"
+  # /etc/passwd (format de UNIX V7) : root sans mot de passe, invite avec le
+  # mot de passe "invite" (hachage de KERNEL16/USR/CRYPT.INC)
+  { printf 'root::0:0:Super-utilisateur:/:/bin/sh\n'
+    printf 'invite:%s:100:100:Invite:/home/invite:/bin/sh\n' "$(crypt invite ab)"; } > "$d/etc/passwd"
+  printf '10console\n' > "$d/etc/ttys"
+  mkdir -p "$d/home/invite"
   for c in "$@"; do
-    local l=$(echo "$c" | tr 'A-Z' 'a-z')
-    cp "$W/src/$c" "$d/bin/$l"
+    case $c in
+      SHELL) cp "$W/src/$c" "$d/bin/sh" ;;
+      SH)    cp "$W/src/$c" "$d/bin/shdos" ;;
+      *)     cp "$W/src/$c" "$d/bin/$(echo "$c" | tr 'A-Z' 'a-z')" ;;
+    esac
   done
 }
-ALL=$(cd "$W/src" && ls *.PAS | sed 's/\.PAS$//' | grep -v -x -e KERNEL -e INIT)
-CORE="SH CAT LS ECHO PWD CP MV CHMOD TOUCH HEAD TAIL WC GREP DF DU UNAME CLEAR TRUE FALSE SLEEP REBOOT ENV DD STAT"
+# hachage des mots de passe (meme calcul que KERNEL16/USR/CRYPT.INC)
+crypt() {
+  python3 - "$1" "$2" <<'PYEOF'
+import sys
+pw, salt = sys.argv[1], (sys.argv[2] + '..')[:2]
+a, b, c, d = 0x6A09, 0xBB67, 0x3C6E, 0xA54F
+for r in range(32):
+    for ch in (salt + pw).encode('latin-1'):
+        a = ((a ^ ch) * 31421 + 1) & 0xFFFF
+        b = ((b ^ a) * 31421 + ch) & 0xFFFF
+        c = ((c ^ b) * 31421 + 7) & 0xFFFF
+        d = ((d ^ c) * 31421 + a) & 0xFFFF
+bits = (a << 48) | (b << 32) | (c << 16) | d
+al = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+out = salt
+for k in range(11):
+    v = 0
+    for r in range(6):
+        n = k * 6 + r
+        v = v * 2 + ((bits >> (63 - n)) & 1 if n < 64 else 0)
+    out += al[v]
+print(out)
+PYEOF
+}
+ALL=$(cd "$W/src" && ls *.PAS | sed 's/\.PAS$//' | grep -v -x -e KERNEL -e INIT -e GETTY)
+CORE="SHELL LOGIN PASSWD PS KILL ID MKDIR RMDIR RM CAT LS ECHO PWD CP MV CHMOD HEAD WC GREP DF UNAME REBOOT"
 
 mkdir -p "$ROOT/IMAGES"
 echo "== Disquette 1,44 Mo"
 mkroot "$W/fd144" $CORE
 "$W/bin/mkimage" FLOPPY "$ROOT/IMAGES/UNIX0-144.IMG" "$HERE/BOOTSECT.BIN" "$W/fd144" 1440
 echo "== Disquette 2,88 Mo"
-mkroot "$W/fd288" $ALL
+# sans les interpreteurs de style DOS BASH, CSH et KSH (sur le disque dur)
+mkroot "$W/fd288" $(echo $ALL | tr ' ' '\n' | grep -v -x -e BASH -e CSH -e KSH)
 "$W/bin/mkimage" FLOPPY "$ROOT/IMAGES/UNIX0-288.IMG" "$HERE/BOOTSECT.BIN" "$W/fd288" 2880
 echo "== Disque dur (FAT16 + UFS)"
 mkroot "$W/hd" $ALL

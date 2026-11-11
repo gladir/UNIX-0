@@ -47,6 +47,12 @@ BEGIN
    If ParamStr(I)='-t'Then Include(Option,_time)
                       Else Path:=ParamStr(I);
   End;
+  { un repertoire designe sans joker : liste de son contenu }
+  If(Path<>'')and(Path[Length(Path)]in['\','/'])Then Path:=Path+'*.*'Else
+  If(Pos('*',Path)=0)and(Pos('?',Path)=0)Then Begin
+   FindFirst(Path,AnyFile,Info);
+   If(DosError=0)and(Info.Attr and Directory=Directory)Then Path:=Path+'\*.*';
+  End;
   FindFirst(Path,AnyFile,Info);
   While DosError=0 do Begin
    If Not((Info.Name='.')or(Info.Name='..'))Then Begin

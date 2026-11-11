@@ -10,9 +10,16 @@
   l'option /X, avant toute autre unite.
 
   Convention des appels systeme UNIX-0 (INT 80h) :
-   AX = numero de l'appel, BX, CX, DX, SI, DI = arguments, DS:DX = premier
-   pointeur, ES:DI = second pointeur. Retour : AX (DX:AX pour 32 bits),
-   CF=1 en cas d'erreur avec AX = errno.
+   AX = numero de l'appel (numeros de UNIX V7, puis de 4.2BSD au-dela de
+   63), BX, CX, DX, SI, DI = arguments, DS:DX = premier pointeur, ES:DI =
+   second pointeur. Retour : AX (DX:AX pour 32 bits), CF=1 en cas d'erreur
+   avec AX = errno (valeurs de UNIX V7).
+
+  Demarrage d'un programme : comme sous UNIX, SS:SP pointe sur argc, suivi
+  des tableaux argv[] et envp[] (pointeurs FAR termines par un pointeur nul)
+  et des chaines; le pointeur sur argc est aussi au mot double PSP:4Ch
+  (ArgCount, ArgStr). Le prefixe de programme (PSP) compatible DOS est
+  conserve pour la bibliotheque d'execution de Turbo Pascal (ParamStr).
 
   Couche libc : la bibliotheque d'execution de Turbo Pascal (et les unites
   DOS, CRT, PRINTER) s'adressent aux services de MS-DOS par INT 21h. Sous
@@ -20,8 +27,14 @@
   l'adresse de DosEntry, enregistree par l'appel systeme 201 (setdos) lors de
   l'initialisation de cette unite. DosEntry traduit alors, dans le
   processus lui-meme, chaque service DOS en appels systeme UNIX-0 (open,
-  read, write, getdents, fork/execve/waitpid, ...), comme le ferait une libc :
-  le programme n'appelle jamais de service MS-DOS.
+  read, write, getdirentries, vfork/exece/wait, ...), comme le ferait une
+  libc : le programme n'appelle jamais de service MS-DOS.
+
+  Signaux : SysSignal(SIGINT, @Gestionnaire) installe un gestionnaire
+  "Procedure Gestionnaire(Sig: Integer); Far;". Le noyau le fait executer
+  par la trampoline de cette unite (appel systeme 204), qui sauvegarde
+  l'etat de la libc; comme dans UNIX V7, l'action redevient SIG_DFL avant
+  l'appel du gestionnaire (le reinstaller au besoin).
 }
 
 Unit Unix;
@@ -31,59 +44,78 @@ Unit Unix;
 Interface
 
 Const
- { Numeros des appels systeme (proches de Linux i386) }
+ { Numeros des appels systeme : UNIX V7 (1 a 63), 4.2BSD, puis UNIX-0 }
  SYS_exit=1;      SYS_fork=2;      SYS_read=3;      SYS_write=4;
- SYS_open=5;      SYS_close=6;     SYS_waitpid=7;   SYS_creat=8;
- SYS_link=9;      SYS_unlink=10;   SYS_execve=11;   SYS_chdir=12;
- SYS_time=13;     SYS_chmod=15;    SYS_lseek=19;    SYS_getpid=20;
- SYS_mount=21;    SYS_umount=22;   SYS_getuid=24;   SYS_stime=25;
- SYS_pause=29;    SYS_sync=36;     SYS_kill=37;     SYS_rename=38;
- SYS_mkdir=39;    SYS_rmdir=40;    SYS_dup=41;      SYS_pipe=42;
- SYS_brk=45;      SYS_signal=48;   SYS_ioctl=54;    SYS_dup2=63;
- SYS_getppid=64;  SYS_reboot=88;   SYS_stat=106;    SYS_fstat=108;
- SYS_uname=122;   SYS_getdents=141; SYS_yield=158;  SYS_sleep=162;
- SYS_getcwd=183;  SYS_vfork=190;   SYS_procinfo=200; SYS_setdos=201;
- SYS_meminfo=202;
- SYS_mountinfo=203;
+ SYS_open=5;      SYS_close=6;     SYS_wait=7;      SYS_creat=8;
+ SYS_link=9;      SYS_unlink=10;   SYS_exec=11;     SYS_chdir=12;
+ SYS_time=13;     SYS_mknod=14;    SYS_chmod=15;    SYS_chown=16;
+ SYS_break=17;    SYS_stat=18;     SYS_lseek=19;    SYS_getpid=20;
+ SYS_mount=21;    SYS_umount=22;   SYS_setuid=23;   SYS_getuid=24;
+ SYS_stime=25;    SYS_alarm=27;    SYS_fstat=28;    SYS_pause=29;
+ SYS_utime=30;    SYS_stty=31;     SYS_gtty=32;     SYS_access=33;
+ SYS_nice=34;     SYS_ftime=35;    SYS_sync=36;     SYS_kill=37;
+ SYS_getppid=39;  SYS_dup=41;      SYS_pipe=42;     SYS_times=43;
+ SYS_setgid=46;   SYS_getgid=47;   SYS_signal=48;   SYS_ioctl=54;
+ SYS_reboot=55;   SYS_uname=57;    SYS_exece=59;    SYS_umask=60;
+ SYS_vfork=66;    SYS_dup2=90;     SYS_rename=128;  SYS_mkdir=136;
+ SYS_rmdir=137;   SYS_getdirentries=156;
+ SYS_procinfo=200; SYS_setdos=201; SYS_meminfo=202; SYS_mountinfo=203;
+ SYS_sigtramp=204; SYS_getcwd=205; SYS_nap=206;
 
- { open }
- O_RDONLY=0; O_WRONLY=1; O_RDWR=2; O_CREAT=$40; O_EXCL=$80; O_TRUNC=$200;
- O_APPEND=$400;
+ { open (valeurs de 4.2BSD) }
+ O_RDONLY=0; O_WRONLY=1; O_RDWR=2; O_NDELAY=4; O_APPEND=8; O_CREAT=$200;
+ O_TRUNC=$400; O_EXCL=$800;
  { lseek }
  SEEK_SET=0; SEEK_CUR=1; SEEK_END=2;
- { waitpid }
+ { wait }
  WNOHANG=1;
- { signaux }
- SIGHUP=1; SIGINT=2; SIGQUIT=3; SIGILL=4; SIGKILL=9; SIGSEGV=11; SIGPIPE=13;
- SIGALRM=14; SIGTERM=15; SIGCHLD=17; SIGSYS=31;
- SIG_DFL=0; SIG_IGN=1;
- { ioctl de la console }
- TIOCISATTY=0; TIOCGETMODE=1; TIOCSETMODE=2; TIOCNREAD=3;
- TTY_RAW=1; TTY_NOECHO=2;
- { types de fichiers (st_mode) }
- S_IFMT=$F000; S_IFDIR=$4000; S_IFCHR=$2000; S_IFREG=$8000; S_IFIFO=$1000;
+ { access }
+ R_OK=4; W_OK=2; X_OK=1; F_OK=0;
+ { signaux (UNIX V7) }
+ SIGHUP=1; SIGINT=2; SIGQUIT=3; SIGILL=4; SIGTRAP=5; SIGIOT=6; SIGEMT=7;
+ SIGFPE=8; SIGKILL=9; SIGBUS=10; SIGSEGV=11; SIGSYS=12; SIGPIPE=13;
+ SIGALRM=14; SIGTERM=15; NSIG=16;
+ { ioctl : terminal (UNIX V7) et 4.2BSD }
+ TIOCHPCL=$7402; TIOCGETP=$7408; TIOCSETP=$7409; TIOCSETN=$740A;
+ TIOCEXCL=$740D; TIOCNXCL=$740E; TIOCFLUSH=$7410; TIOCSETC=$7411;
+ TIOCGETC=$7412; FIONREAD=$667F;
+ { sg_flags de sgttyb }
+ TANDEM=1; CBREAK=2; LCASE=4; ECHO=8; CRMOD=$10; RAW=$20;
+ { types de fichiers et permissions (st_mode) }
+ S_IFMT=$F000; S_IFDIR=$4000; S_IFCHR=$2000; S_IFBLK=$6000; S_IFREG=$8000;
+ S_IFIFO=$1000; S_ISUID=$800; S_ISGID=$400; S_ISVTX=$200;
+ S_IREAD=$100; S_IWRITE=$80; S_IEXEC=$40;
  { types de systemes de fichiers pour mount }
  FS_AUTO=0; FS_FAT=1; FS_UFS=2;
- { codes d'erreur (errno) }
+ { codes d'erreur (errno, UNIX V7; au-dela, valeurs de 4.4BSD) }
  EPERM=1; ENOENT=2; ESRCH=3; EINTR=4; EIO=5; ENXIO=6; E2BIG=7; ENOEXEC=8;
- EBADF=9; ECHILD=10; EAGAIN=11; ENOMEM=12; EACCES=13; EFAULT=14; EBUSY=16;
- EEXIST=17; EXDEV=18; ENODEV=19; ENOTDIR=20; EISDIR=21; EINVAL=22;
- ENFILE=23; EMFILE=24; ENOTTY=25; EFBIG=27; ENOSPC=28; ESPIPE=29;
- EROFS=30; EPIPE=32; ENAMETOOLONG=36; ENOSYS=38; ENOTEMPTY=39;
+ EBADF=9; ECHILD=10; EAGAIN=11; ENOMEM=12; EACCES=13; EFAULT=14;
+ ENOTBLK=15; EBUSY=16; EEXIST=17; EXDEV=18; ENODEV=19; ENOTDIR=20;
+ EISDIR=21; EINVAL=22; ENFILE=23; EMFILE=24; ENOTTY=25; ETXTBSY=26;
+ EFBIG=27; ENOSPC=28; ESPIPE=29; EROFS=30; EMLINK=31; EPIPE=32; EDOM=33;
+ ERANGE=34; ENAMETOOLONG=63; ENOTEMPTY=66; ENOSYS=78;
 
 Type
- TStat=Record
-  Dev: Word;
-  Ino: Longint;
+ TStat=Record          { struct stat de UNIX V7 (30 octets) }
+  Dev: Integer;
+  Ino: Word;
   Mode: Word;
-  NLink: Word;
-  Uid: Word;
-  Gid: Word;
-  RDev: Word;
+  NLink: Integer;
+  Uid: Integer;
+  Gid: Integer;
+  RDev: Integer;
   Size: Longint;
   ATime: Longint;
   MTime: Longint;
   CTime: Longint;
+ End;
+ TSgttyb=Record        { struct sgttyb de UNIX V7 }
+  ISpeed, OSpeed: Byte;
+  Erase, Kill: Char;
+  Flags: Word;
+ End;
+ TTms=Record           { struct tms : soixantiemes de seconde }
+  UTime, STime, CUTime, CSTime: Longint;
  End;
  TProcInfo=Record
   Pid: Integer;
@@ -93,6 +125,8 @@ Type
   Paras: Word;    { memoire en paragraphes }
   Ticks: Longint; { temps processeur en tops d'horloge (18,2 par seconde) }
   Name: String[15];
+  Uid: Integer;
+  Gid: Integer;
  End;
  TUtsName=Record
   SysName: String[15];
@@ -125,6 +159,7 @@ Var
  Errno: Integer;
  { registres de l'appel systeme brut }
  SAX,SBX,SCX,SDX,SSI,SDI,SDS,SES,SFL: Word;
+ SIG_DFL, SIG_IGN: Pointer;   { actions de signal (nil et 0000:0001) }
 
 Procedure DoSys;
 Function SysOk: Boolean;
@@ -135,20 +170,45 @@ Function SysRead(Fd: Integer; Var Buf; Count: Word): Integer;
 Function SysWrite(Fd: Integer; Var Buf; Count: Word): Integer;
 Function SysOpen(Path: String; Flags, Mode: Word): Integer;
 Function SysClose(Fd: Integer): Integer;
+Function SysWait(Var Status: Integer): Integer;
 Function WaitPid(Pid: Integer; Var Status: Integer; Options: Word): Integer;
+Function WIfExited(Status: Integer): Boolean;
+Function WExitStatus(Status: Integer): Integer;
+Function WTermSig(Status: Integer): Integer;
 Function SysCreat(Path: String; Mode: Word): Integer;
 Function SysLink(OldPath, NewPath: String): Integer;
 Function SysUnlink(Path: String): Integer;
+Procedure ArgReset;
+Function ArgAdd(S: String): Boolean;
+Function EnvAdd(S: String): Boolean;
+Function EnvInherit: Boolean;
+Function ArgExec(Path: String): Integer;
 Function Execv(Path: String; Args: String): Integer;
-Function Execve(Path: String; Var Block; BlockLen: Word): Integer;
+Function Execve(Path: String; Var Argv; Var Envp): Integer;
+Function ArgCount: Integer;
+Function ArgStr(I: Integer): String;
+Function EnvCount: Integer;
+Function EnvStr(I: Integer): String;
 Function SysChdir(Path: String): Integer;
 Function SysTime: Longint;
+Function SysSTime(T: Longint): Integer;
+Function SysMknod(Path: String; Mode, Dev: Word): Integer;
 Function SysChmod(Path: String; Mode: Word): Integer;
+Function SysChown(Path: String; Uid, Gid: Integer): Integer;
 Function SysLSeek(Fd: Integer; Offset: Longint; Whence: Word): Longint;
 Function GetPid: Integer;
 Function GetPPid: Integer;
+Function GetUid: Integer;
+Function GetGid: Integer;
+Function SetUid(Uid: Integer): Integer;
+Function SetGid(Gid: Integer): Integer;
 Function SysMount(Special, Dir: String; FsType: Word): Integer;
 Function SysUmount(Dir: String): Integer;
+Function SysAlarm(Seconds: Word): Integer;
+Function SysPause: Integer;
+Function SysUtime(Path: String; ATime, MTime: Longint): Integer;
+Function SysAccess(Path: String; Mode: Word): Integer;
+Function SysNice(Incr: Integer): Integer;
 Function SysSync: Integer;
 Function SysKill(Pid, Sig: Integer): Integer;
 Function SysRename(OldPath, NewPath: String): Integer;
@@ -157,20 +217,28 @@ Function SysRmdir(Path: String): Integer;
 Function SysDup(Fd: Integer): Integer;
 Function SysDup2(Fd, Fd2: Integer): Integer;
 Function SysPipe(Var ReadFd, WriteFd: Integer): Integer;
-Function SysSignal(Sig, Action: Integer): Integer;
-Function SysIoctl(Fd, Request, Arg: Integer): Integer;
+Function SysTimes(Var T: TTms): Longint;
+Function SysSignal(Sig: Integer; Action: Pointer): Pointer;
+Function SysIoctl(Fd: Integer; Request: Word; Var Arg): Integer;
+Function GTty(Fd: Integer; Var S: TSgttyb): Integer;
+Function STty(Fd: Integer; Var S: TSgttyb): Integer;
+Function IsATty(Fd: Integer): Boolean;
+Function SysUmask(Mask: Word): Word;
 Function SysReboot: Integer;
 Function SysStat(Path: String; Var St: TStat): Integer;
 Function SysFStat(Fd: Integer; Var St: TStat): Integer;
 Function SysUname(Var U: TUtsName): Integer;
+Function SysGetDirEntries(Fd: Integer; Var Buf; Count: Word): Integer;
 Function SysGetDents(Fd: Integer; Var Buf; Count: Word): Integer;
 Function SysYield: Integer;
 Function SysSleep(Seconds: Word): Integer;
+Function SysNap(Ms: Word): Integer;
 Function SysGetCwd: String;
 Function SysProcInfo(Index: Integer; Var P: TProcInfo): Boolean;
 Function SysMemInfo(Var M: TMemInfo): Integer;
 Function SysMountInfo(Index: Integer; Var M: TMountInfo): Boolean;
 Function SysErrorText(E: Integer): String;
+Function SigName(Sig: Integer): String;
 Function UnixPath(S: String): String;
 
 Implementation
@@ -185,7 +253,7 @@ Type
   Attr: Byte;
   Dir: String[79];
   Pattern: String[12];
-  BufLen, BufPos: Integer;  { entrees getdents en attente }
+  BufLen, BufPos: Integer;  { entrees getdirentries en attente }
   Buf: Array[0..255] Of Byte;
  End;
 
@@ -194,13 +262,17 @@ Var
  RAX,RBX,RCX,RDX,RSI,RDI,RBP,RDS,RES,RFL: Word;
  DtaSeg,DtaOfs: Word;
  LastExit: Word;
- Finds: Array[0..7] Of TFind;
+ Finds: Array[0..3] Of TFind;
  FindNo: Byte;
  HeapFirst,HeapTop: Word;   { zone du tas (paragraphes) }
  PathBuf: Array[0..255] Of Char;
  PathBuf2: Array[0..255] Of Char;
- ArgBlock: Array[0..1023] Of Char;
- DirBuf: Array[0..1023] Of Byte;
+ ArgBlock: Array[0..1535] Of Char;   { chaines de argv et envp (exec) }
+ ArgLen: Word;
+ ArgV: Array[0..63] Of Pointer;     { argv[], nil }
+ EnvV: Array[0..47] Of Pointer;     { envp[], nil }
+ ArgN, EnvN: Integer;
+ DirBuf: Array[0..255] Of Byte;
  KbdAhead: Integer;
 
 { ------------------------------------------------------------------ }
@@ -247,9 +319,10 @@ Asm
 End;
 
 Function SysOk: Boolean;
+{ comme sous UNIX, errno n'est modifie qu'en cas d'erreur }
 Begin
  If SFL And 1<>0 Then Begin Errno:=SAX; SysOk:=False End
- Else Begin Errno:=0; SysOk:=True End;
+ Else SysOk:=True;
 End;
 
 Procedure SetRegs(N,B,C,D: Word);
@@ -281,6 +354,17 @@ Begin
  SES:=Seg(PathBuf2); SDI:=Ofs(PathBuf2);
 End;
 
+Function FarString(Sg,Os: Word): String;
+{ Chaine ASCIIZ Sg:Os -> chaine Pascal }
+Var S: String;
+Begin
+ S:='';
+ While (Mem[Sg:Os]<>0) And (Length(S)<255) Do Begin
+  S:=S+Chr(Mem[Sg:Os]); Inc(Os);
+ End;
+ FarString:=S;
+End;
+
 Function SysExit(Status: Integer): Integer;
 Begin
  SetRegs(SYS_exit,Status,0,0); DoSys; SysExit:=-1;
@@ -293,8 +377,8 @@ End;
 
 Function VFork: Integer;
 { comme Fork, mais le fils s'execute dans la memoire du pere (suspendu)
-  jusqu'a son appel a Execv/Execve ou SysExit : sans copie de la memoire.
-  Le fils ne doit rien faire d'autre que Execv/Execve puis SysExit. }
+  jusqu'a son appel a exec ou SysExit : sans copie de la memoire.
+  Le fils ne doit rien faire d'autre que exec puis SysExit. }
 Begin
  SetRegs(SYS_vfork,0,0,0); VFork:=Result16;
 End;
@@ -320,9 +404,31 @@ Begin
 End;
 
 Function WaitPid(Pid: Integer; Var Status: Integer; Options: Word): Integer;
+{ wait (UNIX V7) etendu : Pid = -1 (n'importe quel fils) ou un fils precis,
+  WNOHANG. Status : code de sortie * 256, ou numero du signal. }
 Begin
- SetRegs(SYS_waitpid,Pid,Options,0); DoSys;
+ SetRegs(SYS_wait,Pid,Options,0); DoSys;
  If SysOk Then Begin WaitPid:=SAX; Status:=SDX End Else WaitPid:=-1;
+End;
+
+Function SysWait(Var Status: Integer): Integer;
+Begin
+ SysWait:=WaitPid(-1,Status,0);
+End;
+
+Function WIfExited(Status: Integer): Boolean;
+Begin
+ WIfExited:=Status And $7F=0;
+End;
+
+Function WExitStatus(Status: Integer): Integer;
+Begin
+ WExitStatus:=Hi(Status);
+End;
+
+Function WTermSig(Status: Integer): Integer;
+Begin
+ WTermSig:=Status And $7F;
 End;
 
 Function SysCreat(Path: String; Mode: Word): Integer;
@@ -341,30 +447,46 @@ Begin
  SetRegs(SYS_unlink,0,0,0); SetPath(Path); SysUnlink:=Result16;
 End;
 
-Function Execve(Path: String; Var Block; BlockLen: Word): Integer;
-{ Block : argv[0], argv[1], ... (chaines ASCIIZ), chaine vide, puis
-  l'environnement (VAR=VALEUR ASCIIZ), chaine vide. }
+{ --- arguments d'exec ------------------------------------------------ }
+
+Procedure ArgReset;
+{ vide les listes argv et envp de ArgExec }
 Begin
- SetRegs(SYS_execve,0,BlockLen,0); SetPath(Path);
- SES:=Seg(Block); SDI:=Ofs(Block);
- Execve:=Result16;
+ ArgLen:=0; ArgN:=0; EnvN:=0; ArgV[0]:=Nil; EnvV[0]:=Nil;
 End;
 
-Function AddArg(Var Len: Word; S: String): Boolean;
+Function AddStr(S: String; Var P: Pointer): Boolean;
 Var I: Integer;
 Begin
- AddArg:=False;
- If Len+Length(S)+1>SizeOf(ArgBlock)-2 Then Exit;
- For I:=1 To Length(S) Do ArgBlock[Len+I-1]:=S[I];
- Inc(Len,Length(S)); ArgBlock[Len]:=#0; Inc(Len);
- AddArg:=True;
+ AddStr:=False;
+ If ArgLen+Length(S)+1>SizeOf(ArgBlock) Then Exit;
+ P:=@ArgBlock[ArgLen];
+ For I:=1 To Length(S) Do ArgBlock[ArgLen+I-1]:=S[I];
+ Inc(ArgLen,Length(S)); ArgBlock[ArgLen]:=#0; Inc(ArgLen);
+ AddStr:=True;
 End;
 
-Function CopyEnv(Var Len: Word): Boolean;
-{ Recopie l'environnement du processus (segment PSP:2Ch). }
+Function ArgAdd(S: String): Boolean;
+Begin
+ ArgAdd:=False;
+ If ArgN>=High(ArgV) Then Exit;
+ If Not AddStr(S,ArgV[ArgN]) Then Exit;
+ Inc(ArgN); ArgV[ArgN]:=Nil; ArgAdd:=True;
+End;
+
+Function EnvAdd(S: String): Boolean;
+Begin
+ EnvAdd:=False;
+ If EnvN>=High(EnvV) Then Exit;
+ If Not AddStr(S,EnvV[EnvN]) Then Exit;
+ Inc(EnvN); EnvV[EnvN]:=Nil; EnvAdd:=True;
+End;
+
+Function EnvInherit: Boolean;
+{ ajoute l'environnement du processus (bloc d'environnement, PSP:2Ch) }
 Var E,O: Word; S: String;
 Begin
- CopyEnv:=True;
+ EnvInherit:=True;
  E:=MemW[PrefixSeg:$2C]; O:=0;
  If E=0 Then Exit;
  While Mem[E:O]<>0 Do Begin
@@ -374,17 +496,33 @@ Begin
   End;
   While Mem[E:O]<>0 Do Inc(O);
   Inc(O);
-  If Not AddArg(Len,S) Then Begin CopyEnv:=False; Exit End;
+  If Not EnvAdd(S) Then Begin EnvInherit:=False; Exit End;
  End;
 End;
 
-Function BuildArgs(Path: String; Args: String; Var Len: Word): Boolean;
+Function Execve(Path: String; Var Argv; Var Envp): Integer;
+{ exece : Argv et Envp sont des tableaux de pointeurs FAR sur des chaines
+  ASCIIZ, termines par Nil }
+Begin
+ SetRegs(SYS_exece,0,Ofs(Envp),0); SetPath(Path);
+ SSI:=Seg(Envp); SES:=Seg(Argv); SDI:=Ofs(Argv);
+ Execve:=Result16;
+End;
+
+Function ArgExec(Path: String): Integer;
+{ exece(Path, argv, envp) avec les listes de ArgAdd et EnvAdd }
+Begin
+ ArgExec:=Execve(Path,ArgV,EnvV);
+End;
+
+Function BuildArgs(Path: String; Args: String): Boolean;
 { argv[0] = Path, puis les mots de Args separes par des espaces (les
   guillemets regroupent), puis l'environnement courant. }
 Var I: Integer; W: String; Quote: Boolean;
 Begin
- BuildArgs:=False; Len:=0;
- If Not AddArg(Len,Path) Then Exit;
+ BuildArgs:=False;
+ ArgReset;
+ If Not ArgAdd(Path) Then Exit;
  I:=1;
  While I<=Length(Args) Do Begin
   While (I<=Length(Args)) And (Args[I] In [' ',#9]) Do Inc(I);
@@ -394,19 +532,53 @@ Begin
    If Args[I]='"' Then Quote:=Not Quote Else W:=W+Args[I];
    Inc(I);
   End;
-  If Not AddArg(Len,W) Then Exit;
+  If Not ArgAdd(W) Then Exit;
  End;
- If Not AddArg(Len,'') Then Exit;
- If Not CopyEnv(Len) Then Exit;
- If Not AddArg(Len,'') Then Exit;
- BuildArgs:=True;
+ BuildArgs:=EnvInherit;
 End;
 
 Function Execv(Path: String; Args: String): Integer;
-Var Len: Word;
 Begin
- If Not BuildArgs(Path,Args,Len) Then Begin Errno:=E2BIG; Execv:=-1; Exit End;
- Execv:=Execve(Path,ArgBlock,Len);
+ If Not BuildArgs(Path,Args) Then Begin Errno:=E2BIG; Execv:=-1; Exit End;
+ Execv:=ArgExec(Path);
+End;
+
+Function ArgCount: Integer;
+{ argc, depuis la pile initiale (pointeur en PSP:4Ch) }
+Begin
+ If MemW[PrefixSeg:$4E]=0 Then ArgCount:=0
+ Else ArgCount:=MemW[MemW[PrefixSeg:$4E]:MemW[PrefixSeg:$4C]];
+End;
+
+Function ArgStr(I: Integer): String;
+{ argv[I] (argv[0] = nom du programme) }
+Var S,O: Word;
+Begin
+ ArgStr:='';
+ If (I<0) Or (I>=ArgCount) Then Exit;
+ S:=MemW[PrefixSeg:$4E]; O:=MemW[PrefixSeg:$4C]+2+I*4;
+ ArgStr:=FarString(MemW[S:O+2],MemW[S:O]);
+End;
+
+Function EnvCount: Integer;
+Var S,O: Word; N: Integer;
+Begin
+ EnvCount:=0;
+ S:=MemW[PrefixSeg:$4E];
+ If S=0 Then Exit;
+ O:=MemW[PrefixSeg:$4C]+2+(ArgCount+1)*4; N:=0;
+ While (MemW[S:O]<>0) Or (MemW[S:O+2]<>0) Do Begin Inc(N); Inc(O,4) End;
+ EnvCount:=N;
+End;
+
+Function EnvStr(I: Integer): String;
+{ envp[I] (VAR=VALEUR) }
+Var S,O: Word;
+Begin
+ EnvStr:='';
+ If (I<0) Or (I>=EnvCount) Then Exit;
+ S:=MemW[PrefixSeg:$4E]; O:=MemW[PrefixSeg:$4C]+2+(ArgCount+1+I)*4;
+ EnvStr:=FarString(MemW[S:O+2],MemW[S:O]);
 End;
 
 Function SysChdir(Path: String): Integer;
@@ -420,9 +592,24 @@ Begin
  SysTime:=Longint(SDX) Shl 16+SAX;
 End;
 
+Function SysSTime(T: Longint): Integer;
+Begin
+ SetRegs(SYS_stime,Word(T),Word(T Shr 16),0); SysSTime:=Result16;
+End;
+
+Function SysMknod(Path: String; Mode, Dev: Word): Integer;
+Begin
+ SetRegs(SYS_mknod,Dev,Mode,0); SetPath(Path); SysMknod:=Result16;
+End;
+
 Function SysChmod(Path: String; Mode: Word): Integer;
 Begin
  SetRegs(SYS_chmod,0,Mode,0); SetPath(Path); SysChmod:=Result16;
+End;
+
+Function SysChown(Path: String; Uid, Gid: Integer): Integer;
+Begin
+ SetRegs(SYS_chown,Uid,Gid,0); SetPath(Path); SysChown:=Result16;
 End;
 
 Function SysLSeek(Fd: Integer; Offset: Longint; Whence: Word): Longint;
@@ -442,6 +629,26 @@ Begin
  SetRegs(SYS_getppid,0,0,0); GetPPid:=Result16;
 End;
 
+Function GetUid: Integer;
+Begin
+ SetRegs(SYS_getuid,0,0,0); GetUid:=Result16;
+End;
+
+Function GetGid: Integer;
+Begin
+ SetRegs(SYS_getgid,0,0,0); GetGid:=Result16;
+End;
+
+Function SetUid(Uid: Integer): Integer;
+Begin
+ SetRegs(SYS_setuid,Uid,0,0); SetUid:=Result16;
+End;
+
+Function SetGid(Gid: Integer): Integer;
+Begin
+ SetRegs(SYS_setgid,Gid,0,0); SetGid:=Result16;
+End;
+
 Function SysMount(Special, Dir: String; FsType: Word): Integer;
 Begin
  SetRegs(SYS_mount,FsType,0,0); SetPath(Special); SetPath2(Dir);
@@ -451,6 +658,34 @@ End;
 Function SysUmount(Dir: String): Integer;
 Begin
  SetRegs(SYS_umount,0,0,0); SetPath(Dir); SysUmount:=Result16;
+End;
+
+Function SysAlarm(Seconds: Word): Integer;
+Begin
+ SetRegs(SYS_alarm,Seconds,0,0); SysAlarm:=Result16;
+End;
+
+Function SysPause: Integer;
+Begin
+ SetRegs(SYS_pause,0,0,0); SysPause:=Result16;
+End;
+
+Function SysUtime(Path: String; ATime, MTime: Longint): Integer;
+Var T: Array[0..1] Of Longint;
+Begin
+ T[0]:=ATime; T[1]:=MTime;
+ SetRegs(SYS_utime,0,0,0); SetPath(Path); SES:=Seg(T); SDI:=Ofs(T);
+ SysUtime:=Result16;
+End;
+
+Function SysAccess(Path: String; Mode: Word): Integer;
+Begin
+ SetRegs(SYS_access,Mode,0,0); SetPath(Path); SysAccess:=Result16;
+End;
+
+Function SysNice(Incr: Integer): Integer;
+Begin
+ SetRegs(SYS_nice,Incr,0,0); SysNice:=Result16;
 End;
 
 Function SysSync: Integer;
@@ -496,14 +731,45 @@ Begin
  Else SysPipe:=-1;
 End;
 
-Function SysSignal(Sig, Action: Integer): Integer;
+Function SysTimes(Var T: TTms): Longint;
 Begin
- SetRegs(SYS_signal,Sig,Action,0); SysSignal:=Result16;
+ SetRegs(SYS_times,0,0,Ofs(T)); SDS:=Seg(T); DoSys;
+ SysTimes:=Longint(SDX) Shl 16+SAX;
 End;
 
-Function SysIoctl(Fd, Request, Arg: Integer): Integer;
+Function SysSignal(Sig: Integer; Action: Pointer): Pointer;
+{ Action : SIG_DFL, SIG_IGN ou @Gestionnaire ("Procedure G(Sig: Integer);
+  Far;"). Rend l'action precedente (Ptr(0,$FFFF) en cas d'erreur). }
 Begin
- SetRegs(SYS_ioctl,Fd,Request,Arg); SysIoctl:=Result16;
+ SetRegs(SYS_signal,Sig,Ofs(Action^),Seg(Action^)); DoSys;
+ If SysOk Then SysSignal:=Ptr(SDX,SAX) Else SysSignal:=Ptr(0,$FFFF);
+End;
+
+Function SysIoctl(Fd: Integer; Request: Word; Var Arg): Integer;
+Begin
+ SetRegs(SYS_ioctl,Fd,Request,Ofs(Arg)); SDS:=Seg(Arg);
+ SysIoctl:=Result16;
+End;
+
+Function GTty(Fd: Integer; Var S: TSgttyb): Integer;
+Begin
+ GTty:=SysIoctl(Fd,TIOCGETP,S);
+End;
+
+Function STty(Fd: Integer; Var S: TSgttyb): Integer;
+Begin
+ STty:=SysIoctl(Fd,TIOCSETP,S);
+End;
+
+Function IsATty(Fd: Integer): Boolean;
+Var S: TSgttyb;
+Begin
+ IsATty:=GTty(Fd,S)=0;
+End;
+
+Function SysUmask(Mask: Word): Word;
+Begin
+ SetRegs(SYS_umask,Mask,0,0); SysUmask:=Result16;
 End;
 
 Function SysReboot: Integer;
@@ -528,20 +794,38 @@ Begin
  SetRegs(SYS_uname,0,0,Ofs(U)); SDS:=Seg(U); SysUname:=Result16;
 End;
 
+Function SysGetDirEntries(Fd: Integer; Var Buf; Count: Word): Integer;
+{ entrees de repertoire au format de 4.4BSD (struct dirent) }
+Begin
+ SetRegs(SYS_getdirentries,Fd,Count,Ofs(Buf)); SDS:=Seg(Buf);
+ SysGetDirEntries:=Result16;
+End;
+
 Function SysGetDents(Fd: Integer; Var Buf; Count: Word): Integer;
 Begin
- SetRegs(SYS_getdents,Fd,Count,Ofs(Buf)); SDS:=Seg(Buf);
- SysGetDents:=Result16;
+ SysGetDents:=SysGetDirEntries(Fd,Buf,Count);
+End;
+
+Function SysNap(Ms: Word): Integer;
+Begin
+ SetRegs(SYS_nap,Ms,0,0); SysNap:=Result16;
 End;
 
 Function SysYield: Integer;
 Begin
- SetRegs(SYS_yield,0,0,0); SysYield:=Result16;
+ SysYield:=SysNap(0);
 End;
 
 Function SysSleep(Seconds: Word): Integer;
+{ sleep(3) : par tranches de 60 secondes au plus (appel nap) }
+Var N: Word;
 Begin
- SetRegs(SYS_sleep,Seconds,0,0); SysSleep:=Result16;
+ SysSleep:=0;
+ While Seconds>0 Do Begin
+  If Seconds>60 Then N:=60 Else N:=Seconds;
+  If SysNap(N*1000)<0 Then Begin SysSleep:=-1; Exit End;
+  Dec(Seconds,N);
+ End;
 End;
 
 Function SysGetCwd: String;
@@ -590,6 +874,8 @@ Begin
   EAGAIN: S:='Ressource temporairement indisponible';
   ENOMEM: S:='Memoire insuffisante';
   EACCES: S:='Permission refusee';
+  EFAULT: S:='Adresse invalide';
+  ENOTBLK: S:='Peripherique bloc requis';
   EBUSY: S:='Peripherique ou ressource occupe';
   EEXIST: S:='Le fichier existe';
   EXDEV: S:='Lien entre peripheriques';
@@ -600,17 +886,96 @@ Begin
   ENFILE: S:='Table des fichiers pleine';
   EMFILE: S:='Trop de fichiers ouverts';
   ENOTTY: S:='N''est pas un terminal';
+  ETXTBSY: S:='Fichier texte occupe';
   EFBIG: S:='Fichier trop gros';
   ENOSPC: S:='Plus d''espace sur le peripherique';
   ESPIPE: S:='Deplacement illegal';
   EROFS: S:='Systeme de fichiers en lecture seule';
+  EMLINK: S:='Trop de liens';
   EPIPE: S:='Tube brise';
+  EDOM: S:='Argument hors du domaine';
+  ERANGE: S:='Resultat hors limites';
   ENAMETOOLONG: S:='Nom trop long';
   ENOSYS: S:='Fonction non implementee';
   ENOTEMPTY: S:='Repertoire non vide';
   Else Begin Str(E,S); S:='Erreur '+S End;
  End;
  SysErrorText:=S;
+End;
+
+Function SigName(Sig: Integer): String;
+{ message du signal qui a termine un processus (comme sh de V7) }
+Var S: String;
+Begin
+ Case Sig Of
+  SIGHUP: S:='Raccroche';
+  SIGINT: S:='';
+  SIGQUIT: S:='Abandon';
+  SIGILL: S:='Instruction illegale';
+  SIGTRAP: S:='Trappe';
+  SIGIOT: S:='IOT';
+  SIGEMT: S:='EMT';
+  SIGFPE: S:='Exception arithmetique';
+  SIGKILL: S:='Tue';
+  SIGBUS: S:='Erreur de bus';
+  SIGSEGV: S:='Erreur de segmentation';
+  SIGSYS: S:='Appel systeme invalide';
+  SIGPIPE: S:='';
+  SIGALRM: S:='Alarme';
+  SIGTERM: S:='Termine';
+  Else Begin Str(Sig,S); S:='Signal '+S End;
+ End;
+ SigName:=S;
+End;
+
+{ --- signaux : trampoline ------------------------------------------- }
+
+Procedure SigDispatch(Sig: Integer; Hd: Pointer); Far;
+{ appelle le gestionnaire Hd en preservant l'etat de la libc (un signal
+  peut arriver pendant la traduction d'un service DOS) }
+Var
+ A,B,C,D,E,F,G,H,I,J: Word;
+ K,L,M,N,O,P,Q,R,S: Word;
+ Er: Integer;
+Begin
+ A:=RAX; B:=RBX; C:=RCX; D:=RDX; E:=RSI; F:=RDI; G:=RBP; H:=RDS; I:=RES;
+ J:=RFL; K:=SAX; L:=SBX; M:=SCX; N:=SDX; O:=SSI; P:=SDI; Q:=SDS; R:=SES;
+ S:=SFL; Er:=Errno;
+ Asm
+  PUSH Sig
+  CALL DWORD PTR Hd
+ End;
+ RAX:=A; RBX:=B; RCX:=C; RDX:=D; RSI:=E; RDI:=F; RBP:=G; RDS:=H; RES:=I;
+ RFL:=J; SAX:=K; SBX:=L; SCX:=M; SDX:=N; SSI:=O; SDI:=P; SDS:=Q; SES:=R;
+ SFL:=S; Errno:=Er;
+End;
+
+Procedure SigTrampoline; Assembler;
+{ point d'entree des gestionnaires, prepare par le noyau : sur la pile, le
+  numero du signal, l'adresse FAR du gestionnaire, puis les registres du
+  programme interrompu (AX, BX, CX, DX, SI, DI, BP, ES, DS, IP, CS, FLAGS) }
+Asm
+ MOV BP,SP
+ MOV AX,SEG @DATA
+ MOV DS,AX
+ MOV AX,[BP]
+ PUSH AX
+ MOV AX,[BP+4]
+ PUSH AX
+ MOV AX,[BP+2]
+ PUSH AX
+ CALL SigDispatch
+ ADD SP,6
+ POP AX
+ POP BX
+ POP CX
+ POP DX
+ POP SI
+ POP DI
+ POP BP
+ POP ES
+ POP DS
+ IRET
 End;
 
 { ------------------------------------------------------------------ }
@@ -631,17 +996,6 @@ Begin
  Else If (U='CON') Or (U='/DEV/CON') Then S:='/dev/tty';
  If S='' Then S:='.';
  UnixPath:=S;
-End;
-
-Function FarString(Sg,Os: Word): String;
-{ Chaine ASCIIZ Sg:Os -> chaine Pascal }
-Var S: String;
-Begin
- S:='';
- While (Mem[Sg:Os]<>0) And (Length(S)<255) Do Begin
-  S:=S+Chr(Mem[Sg:Os]); Inc(Os);
- End;
- FarString:=S;
 End;
 
 Procedure SetCarry(Err: Word);
@@ -694,25 +1048,32 @@ Begin
 End;
 
 Procedure DosExec;
-{ 4B00h : DS:DX programme, ES:BX bloc de parametres -> fork, execve, waitpid }
-Var Path,Tail: String; TSeg,TOfs: Word; L,I: Integer; Pid,St: Integer;
-  Len: Word;
+{ 4B00h : DS:DX programme, ES:BX bloc de parametres -> vfork, exece, wait.
+  Comme system(3) de UNIX V7, le pere ignore SIGINT et SIGQUIT pendant
+  l'execution du fils (qui les recoit, lui, avec l'action par defaut). }
+Var Path,Tail: String; TSeg,TOfs: Word; L,I: Integer; Pid,St,W: Integer;
+  OldInt,OldQuit: Pointer;
 Begin
  Path:=ExecPath(UnixPath(FarString(RDS,RDX)));
  TOfs:=MemW[RES:RBX+2]; TSeg:=MemW[RES:RBX+4];
  L:=Mem[TSeg:TOfs]; Tail:='';
  For I:=1 To L Do If Mem[TSeg:TOfs+I]<>13 Then Tail:=Tail+Chr(Mem[TSeg:TOfs+I]);
  If Not FileExistsU(Path) Then Begin SetCarry(2); Exit End;
- If Not BuildArgs(Path,Tail,Len) Then Begin SetCarry(10); Exit End;
+ If Not BuildArgs(Path,Tail) Then Begin SetCarry(10); Exit End;
+ OldInt:=SysSignal(SIGINT,SIG_IGN); OldQuit:=SysSignal(SIGQUIT,SIG_IGN);
  Pid:=VFork;
- If Pid<0 Then Begin Fail; Exit End;
  If Pid=0 Then Begin
-  Execve(Path,ArgBlock,Len);
+  SysSignal(SIGINT,OldInt); SysSignal(SIGQUIT,OldQuit);
+  ArgExec(Path);
   SysExit(127);
  End;
- If WaitPid(Pid,St,0)<0 Then Begin Fail; Exit End;
- { St : code de sortie dans l'octet bas, signal dans l'octet haut }
- If Hi(St)<>0 Then LastExit:=$100 Or Hi(St) Else LastExit:=Lo(St);
+ If Pid>0 Then
+  Repeat W:=WaitPid(Pid,St,0) Until (W=Pid) Or ((W<0) And (Errno<>EINTR));
+ SysSignal(SIGINT,OldInt); SysSignal(SIGQUIT,OldQuit);
+ If (Pid<0) Or (W<0) Then Begin Fail; Exit End;
+ { DOS (4Dh) : AH = 0 fin normale, 1 interruption (^C); AL = code }
+ If WTermSig(St)<>0 Then LastExit:=$100 Or WTermSig(St)
+ Else LastExit:=WExitStatus(St);
  RAX:=0;
 End;
 
@@ -797,7 +1158,7 @@ Begin
  With Finds[K] Do
  While True Do Begin
   If BufPos>=BufLen Then Begin
-   N:=SysGetDents(Fd,Buf,SizeOf(Buf));
+   N:=SysGetDirEntries(Fd,Buf,SizeOf(Buf));
    If N<=0 Then Begin
     SysClose(Fd); Used:=False; SetCarry(18); Exit;
    End;
@@ -845,7 +1206,7 @@ Begin
  Else Begin D:=Copy(S,1,I); P:=Copy(S,I+1,255); If D<>'/' Then Dec(D[0]) End;
  If P='' Then P:='*';
  { sans joker : recherche d'un nom precis }
- K:=FindNo; FindNo:=(FindNo+1) And 7;
+ K:=FindNo; FindNo:=(FindNo+1) And 3;
  If Finds[K].Used Then SysClose(Finds[K].Fd);
  Finds[K].Used:=False;
  If D='' Then Finds[K].Fd:=SysOpen('.',O_RDONLY,0)
@@ -862,7 +1223,7 @@ Procedure DosFindNext;
 Var K: Integer;
 Begin
  K:=Mem[DtaSeg:DtaOfs];
- If (K>7) Or (Mem[DtaSeg:DtaOfs+1]<>$55) Or Not Finds[K].Used Then Begin
+ If (K>3) Or (Mem[DtaSeg:DtaOfs+1]<>$55) Or Not Finds[K].Used Then Begin
   SetCarry(18); Exit;
  End;
  FindRead(K);
@@ -872,14 +1233,32 @@ End;
   (octet 0 : 'M' utilise / 'Z' libre, mots 1 : taille en paragraphes
   donnees comprises, 3 : signature 'U0') }
 Procedure HeapInit;
+{ tas : de PSP:48h a la fin de l'image (PSP:2), eventuellement vide }
 Begin
  HeapFirst:=MemW[PrefixSeg:$48];
  HeapTop:=MemW[PrefixSeg:2];
- If (HeapFirst=0) Or (HeapFirst>=HeapTop) Then Begin
+ If (HeapFirst=0) Or (HeapFirst>HeapTop) Then Begin
   HeapFirst:=0; Exit;
  End;
+ If HeapFirst=HeapTop Then Exit;
  Mem[HeapFirst:0]:=Ord('Z'); MemW[HeapFirst:1]:=HeapTop-HeapFirst;
  MemW[HeapFirst:3]:=$3055;
+End;
+
+Function HeapGrow(Need: Word): Boolean;
+{ agrandit le tas d'au moins Need paragraphes (appel systeme break, comme
+  sbrk de UNIX) : nouveau bloc libre a la fin, fusionne avec le dernier }
+Var Inc_: Word;
+Begin
+ HeapGrow:=False;
+ If (HeapFirst=0) Or (Need>$F000) Then Exit;
+ Inc_:=(Need+1+255) And $FF00;     { par 4 Ko }
+ If Longint(HeapTop)+Inc_>$A000 Then Exit;
+ SetRegs(SYS_break,HeapTop+Inc_,0,0);
+ If Result16=-1 Then Exit;
+ Mem[HeapTop:0]:=Ord('Z'); MemW[HeapTop:1]:=Inc_; MemW[HeapTop:3]:=$3055;
+ HeapTop:=HeapTop+Inc_; MemW[PrefixSeg:2]:=HeapTop;
+ HeapGrow:=True;
 End;
 
 Procedure HeapMerge;
@@ -895,12 +1274,15 @@ Begin
 End;
 
 Procedure DosAlloc;
-{ 48h : BX paragraphes -> AX segment; BX = plus grand bloc si echec }
-Var S,Best,Need,Sz: Word;
+{ 48h : BX paragraphes -> AX segment; BX = plus grand bloc si echec. Sans
+  bloc assez grand, le tas est agrandi (break) puis la recherche reprise. }
+Var S,Best,Need,Sz: Word; Grown: Boolean;
 Begin
  If HeapFirst=0 Then Begin RBX:=0; SetCarry(8); Exit End;
- HeapMerge;
  Need:=RBX+1; If RBX=$FFFF Then Need:=$FFFF;
+ Grown:=False;
+ Repeat
+ HeapMerge;
  S:=HeapFirst; Best:=0;
  While S<HeapTop Do Begin
   Sz:=MemW[S:1];
@@ -918,6 +1300,10 @@ Begin
   End;
   S:=S+Sz;
  End;
+ If Grown Or (Need=$FFFF) Then Break;
+ Grown:=True;
+ If Not HeapGrow(Need) Then Break;
+ Until False;
  RBX:=Best; SetCarry(8);
 End;
 
@@ -965,17 +1351,21 @@ Begin
  SetCarry(8);
 End;
 
-Function ReadKey(Echo: Boolean): Byte;
-{ un caractere de l'entree standard, mode brut }
-Var M: Integer; B: Byte; N: Integer;
+Function ReadKey(DoEcho: Boolean): Byte;
+{ un caractere de l'entree standard : terminal en mode RAW sans echo le
+  temps de la lecture (TIOCSETN, sans perdre les frappes en avance) }
+Var Old,New: TSgttyb; Tty: Boolean; B: Byte; N: Integer;
 Begin
  If KbdAhead>=0 Then Begin ReadKey:=KbdAhead; KbdAhead:=-1; Exit End;
- M:=SysIoctl(0,TIOCGETMODE,0);
- If M>=0 Then SysIoctl(0,TIOCSETMODE,TTY_RAW Or TTY_NOECHO);
+ Tty:=SysIoctl(0,TIOCGETP,Old)=0;
+ If Tty Then Begin
+  New:=Old; New.Flags:=(New.Flags Or RAW) And Not ECHO;
+  SysIoctl(0,TIOCSETN,New);
+ End;
  N:=SysRead(0,B,1);
- If M>=0 Then SysIoctl(0,TIOCSETMODE,M);
+ If Tty Then SysIoctl(0,TIOCSETN,Old);
  If N<=0 Then B:=26;
- If Echo And (B>=32) Then SysWrite(1,B,1);
+ If DoEcho And (B>=32) Then SysWrite(1,B,1);
  ReadKey:=B;
 End;
 
@@ -983,7 +1373,8 @@ Function KeyReady: Boolean;
 Var N: Integer;
 Begin
  If KbdAhead>=0 Then Begin KeyReady:=True; Exit End;
- N:=SysIoctl(0,TIOCNREAD,0);
+ N:=0;
+ If SysIoctl(0,FIONREAD,N)<0 Then N:=0;
  KeyReady:=N>0;
 End;
 
@@ -1138,14 +1529,13 @@ Begin
        End;
   $44: Case AL Of
         0: Begin
-            N:=SysIoctl(RBX,TIOCISATTY,0);
-            If N>0 Then RDX:=$80D3 Else If SysFStat(RBX,St)<0 Then Fail
+            If IsATty(RBX) Then RDX:=$80D3 Else If SysFStat(RBX,St)<0 Then Fail
             Else RDX:=0;
             RAX:=RDX;
            End;
         1: ;
         6: Begin
-            If SysIoctl(RBX,TIOCISATTY,0)>0 Then Begin
+            If IsATty(RBX) Then Begin
              If KeyReady Then RAX:=$FF Else RAX:=0;
             End Else RAX:=$FF;
            End;
@@ -1262,8 +1652,13 @@ End;
 Begin
  KbdAhead:=-1; FindNo:=0; LastExit:=0;
  DtaSeg:=PrefixSeg; DtaOfs:=$80;
+ SIG_DFL:=Nil; SIG_IGN:=Ptr(0,1);
+ ArgReset;
  HeapInit;
- { enregistre la couche libc aupres du noyau (vecteur 21h du processus) }
+ { enregistre la couche libc aupres du noyau (vecteur 21h du processus) et
+   la trampoline des gestionnaires de signaux }
  SetRegs(SYS_setdos,Ofs(DosEntry),Seg(DosEntry),0);
+ DoSys;
+ SetRegs(SYS_sigtramp,Ofs(SigTrampoline),Seg(SigTrampoline),0);
  DoSys;
 End.
