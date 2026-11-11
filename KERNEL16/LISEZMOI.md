@@ -30,6 +30,12 @@ KERNEL16/TESTS/RUNTESTS.SH
 qemu-system-i386 -drive file=IMAGES/UNIX0-HD.IMG,format=raw,if=ide -boot c
 ```
 
+Dans l'IDE **DEVENV** (dépôt DEV-COOLS), UNIX-0 s'exécute dans un onglet
+« Émulateur 8086 » : lancer `devenv /DISK0:IMAGES/UNIX0-144.IMG` puis taper
+`BOOT A:` dans le terminal CMD de l'IDE (ou `devenv /DISK80:IMAGES/UNIX0-HD.IMG`
+puis `BOOT C:`). `KERNEL16/TESTS/DEVENV.SH` refait l'essai automatiquement avec
+le banc d'essai sans interface de DEVENV (`/KERNELTEST`, `/KTBOOTIMG`).
+
 Prérequis sur l'hôte : Free Pascal (`fpc`) pour compiler UPC et MKIMAGE, et
 facultativement `nasm` (secteurs d'amorce, déjà fournis en `.BIN`), `makefs`
 (partition UFS du disque dur) et `qemu-system-i386`.
@@ -82,7 +88,12 @@ dans un segment DS commun de 64 Ko au plus.
   tenus à jour), `/dev` (tty, null, zero, disques et partitions), tubes ;
   montages par chemin, cache de 64 secteurs à écriture immédiate.
 * **Console** (`KTty`) : écran BIOS, clavier BIOS et COM1, mode canonique
-  (effacement, `^U`, `^C` = SIGINT, `^D` = fin de fichier) ou brut.
+  (effacement, `^U`, `^C` = SIGINT, `^D` = fin de fichier) ou brut. Le
+  tampon clavier du BIOS (15 touches) est vidé dans la file du terminal à
+  chaque commutation et à chaque fin de quantum. L'écran est écrit sans la
+  fonction télétype (curseur AH=02h, caractère AH=09h, défilement AH=06h),
+  pour que la position du curseur de la zone BIOS, lue par l'unité CRT des
+  programmes, soit juste sur tous les BIOS et émulateurs.
 * **Disques** (`KDisk`) : BIOS INT 13h, disquettes et disques durs,
   partitions du MBR.
 

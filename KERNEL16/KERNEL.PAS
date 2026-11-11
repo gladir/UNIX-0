@@ -118,6 +118,7 @@ Type
   Status: Word;        { code de sortie (octet bas) et signal (octet haut) }
   SigPend, SigIgn: Word;
   Borrowed: Boolean;   { vfork : la memoire est celle du pere }
+  RawKbd: Boolean;     { a mis le terminal en mode brut : ^C est une donnee }
   SysCtx: Array[0..31] Of Byte;  { contexte de l'appel systeme en cours }
   CpuTicks: Longint;   { temps processeur (tops d'horloge) }
   Fd: Array[0..NOFILE-1] Of Byte;  { 0 = libre, sinon index fichier }
@@ -165,6 +166,7 @@ Type
   RootEnt: Word;
   SecPerFat: Longint;
   FatLBA, RootLBA, DataLBA, Clusters, FreeHint: Longint;
+  FreeClus: Longint;   { grappes libres (-1 = pas encore compte) }
   { UFS1 }
   FSize, BSize, Frag, Ipg, Fpg, Ncg, Iblkno, Cblkno, Dblkno: Longint;
   Inopb, Nindir, CsAddr, CgSize: Longint;
@@ -253,14 +255,64 @@ Begin
 End;
 
 Procedure ConPutC(C: Char);
-Var B: Byte; N: Word;
+{ sortie d'un caractere a l'ecran, sans la fonction teletype (INT 10h AH=0Eh)
+  dont certains emulateurs ne tiennent pas a jour le curseur de la zone BIOS
+  (0040:0050) lue par l'unite CRT des programmes : curseur lu (AH=03h),
+  caractere ecrit (AH=09h), defilement (AH=06h) et curseur replace (AH=02h,
+  qui met a jour la zone BIOS); recopie sur COM1 }
+Var B,Row,Col,Rows,Cols,Pg: Byte; N: Word;
 Begin
- B:=Ord(C);
+ B:=Ord(C); Pg:=ConPage;
  Asm
-  MOV AL,B
-  MOV AH,0Eh
-  MOV BH,ConPage
-  MOV BL,7
+  MOV AH,3
+  MOV BH,Pg
+  PUSH BP
+  INT 10h
+  POP BP
+  MOV Row,DH
+  MOV Col,DL
+ End;
+ Cols:=Mem[$40:$4A]; If Cols=0 Then Cols:=80;
+ Rows:=Mem[$40:$84]+1; If Rows<25 Then Rows:=25;
+ Case B Of
+  13: Col:=0;
+  10: Inc(Row);
+  8: If Col>0 Then Dec(Col);
+  7: ;
+  Else Begin
+   Asm
+    MOV AH,9
+    MOV AL,B
+    MOV BH,Pg
+    MOV BL,7
+    MOV CX,1
+    PUSH BP
+    INT 10h
+    POP BP
+   End;
+   Inc(Col);
+   If Col>=Cols Then Begin Col:=0; Inc(Row) End;
+  End;
+ End;
+ If Row>=Rows Then Begin
+  Row:=Rows-1;
+  Asm
+   MOV AX,0601h
+   MOV BH,7
+   XOR CX,CX
+   MOV DH,Row
+   MOV DL,Cols
+   DEC DL
+   PUSH BP
+   INT 10h
+   POP BP
+  End;
+ End;
+ Asm
+  MOV AH,2
+  MOV BH,Pg
+  MOV DH,Row
+  MOV DL,Col
   PUSH BP
   INT 10h
   POP BP
@@ -1226,6 +1278,8 @@ Function TtyAvail: Integer;
 SegmentImplementation
 
 Var
+ KbdQ: Array[0..127] Of Word;      { frappes recues (code de balayage, car.) }
+ KbdHead, KbdTail: Word;
  InBuf: Array[0..511] Of Char;     { caracteres prets a lire }
  InHead, InTail: Word;
  InEof: Integer;                   { fins de fichier (^D) en attente }
@@ -1257,7 +1311,7 @@ Procedure TtyIntr;
 Var I: Integer;
 Begin
  For I:=1 To NPROC-1 Do With Procs[I] Do
-  If (Stat In [PRUN,PSLEEP]) And (Pid>1) And
+  If (Stat In [PRUN,PSLEEP]) And (Pid>1) And Not RawKbd And
     Not ((Stat=PSLEEP) And ((Chan=CHWAIT+I) Or (Chan=CHVFORK+I))) Then
    PostSig(I,SIGINT);
 End;
@@ -1303,7 +1357,23 @@ Begin
  Wakeup(CHTTY);
 End;
 
-Procedure PollKeys;
+Procedure KbdPut(A, S: Byte);
+{ frappe recue : ^C (hors mode brut) interrompt aussitot l'avant-plan }
+Var N: Word;
+Begin
+ If (A=3) And (TtyMode And TTYRAW=0) Then Begin
+  Echo('^'); Echo('C'); Echo(#10); LineLen:=0;
+  TtyIntr;
+  Exit;
+ End;
+ N:=(KbdTail+1) And 127;
+ If N<>KbdHead Then Begin KbdQ[KbdTail]:=Word(S) Shl 8+A; KbdTail:=N End;
+End;
+
+Procedure KbdDrain;
+{ vide le tampon clavier du BIOS (15 touches) et le port serie dans la file
+  du terminal : appelee a chaque commutation et a chaque fin de quantum, pour
+  ne perdre aucune frappe pendant qu'un programme calcule }
 Var A,S,Have: Byte;
 Begin
  Repeat
@@ -1319,47 +1389,40 @@ Begin
    MOV Have,1
   @None:
   End;
-  If Have=1 Then Input(Chr(A),S);
+  If Have=1 Then KbdPut(A,S);
  Until Have=0;
  If SerialPort<>0 Then
   While Port[SerialPort+5] And 1<>0 Do Begin
    A:=Port[SerialPort];
    If (A=127) And (TtyMode And TTYRAW=0) Then A:=8;
-   If (A=13) Or (A<>10) Then Input(Chr(A),0);
+   If (A=13) Or (A<>10) Then KbdPut(A,0);
   End;
 End;
 
-Procedure TtyPoll;
-{ appelee par l'ordonnanceur : lit le clavier si un processus attend }
+Procedure PollKeys;
+{ traite les frappes en attente selon le mode du lecteur }
+Var W: Word;
 Begin
- If TtyWaiting>0 Then PollKeys;
+ KbdDrain;
+ While KbdHead<>KbdTail Do Begin
+  W:=KbdQ[KbdHead]; KbdHead:=(KbdHead+1) And 127;
+  Input(Chr(Lo(W)),Hi(W));
+ End;
+End;
+
+Procedure TtyPoll;
+{ appelee par l'ordonnanceur : recueille les frappes, les traite si un
+  processus lit le terminal }
+Begin
+ If TtyWaiting>0 Then PollKeys Else KbdDrain;
  If BreakFlag Then Begin BreakFlag:=False; TtyIntr End;
 End;
 
 Procedure TtyCheckIntr;
-{ appelee a la preemption : ^C en tete du tampon clavier, Ctrl+Break }
-Var A,Have: Byte;
+{ appelee a la preemption : frappes en attente (^C), Ctrl+Break }
 Begin
- If BreakFlag Then Begin BreakFlag:=False; TtyIntr; Exit End;
- If TtyMode And TTYRAW<>0 Then Exit;
- Have:=0;
- Asm
-  MOV AH,1
-  INT 16h
-  JZ @None
-  CMP AL,3
-  JNE @None
-  MOV AH,0
-  INT 16h
-  MOV Have,1
- @None:
- End;
- If (Have=0) And (SerialPort<>0) Then
-  If Port[SerialPort+5] And 1<>0 Then Begin
-   A:=Port[SerialPort];
-   If A=3 Then Have:=1 Else Input(Chr(A),0);
-  End;
- If Have=1 Then Begin Echo('^'); Echo('C'); Echo(#10); TtyIntr End;
+ If BreakFlag Then Begin BreakFlag:=False; TtyIntr End;
+ KbdDrain;
 End;
 
 Function TtyAvail: Integer;
@@ -1508,7 +1571,7 @@ Begin
   Clusters:=(Tot-DataLBA) Div SecPerClus;
   Sectors:=Tot;
   If Clusters<4085 Then Typ:=FSFAT12 Else Typ:=FSFAT16;
-  FreeHint:=2;
+  FreeHint:=2; FreeClus:=-1;
  End;
  FatMount:=0;
 End;
@@ -1590,7 +1653,9 @@ Begin
   C:=FreeHint; If (C<2) Or (C>Clusters+1) Then C:=2;
   For N:=1 To Clusters Do Begin
    If FatGet(M,C)=0 Then Begin
-    FatSet(M,C,FATEOC); FreeHint:=C+1; FatAlloc:=C; Exit;
+    FatSet(M,C,FATEOC); FreeHint:=C+1; FatAlloc:=C;
+    If FreeClus>0 Then Dec(FreeClus);
+    Exit;
    End;
    Inc(C); If C>Clusters+1 Then C:=2;
   End;
@@ -1604,16 +1669,22 @@ Begin
  While (C>=2) And (C<>FATEOC) And (K<=Mounts[M].Clusters) Do Begin
   N:=FatGet(M,C); FatSet(M,C,0);
   If C<Mounts[M].FreeHint Then Mounts[M].FreeHint:=C;
+  If Mounts[M].FreeClus>=0 Then Inc(Mounts[M].FreeClus);
   C:=N; Inc(K);
  End;
 End;
 
 Function FatFreeKB(M: Integer): Longint;
+{ espace libre : le compte des grappes libres est fait une seule fois, puis
+  tenu a jour par FatAlloc et FreeChain }
 Var C,N: Longint;
 Begin
- N:=0;
- For C:=2 To Mounts[M].Clusters+1 Do If FatGet(M,C)=0 Then Inc(N);
- FatFreeKB:=N*Mounts[M].SecPerClus Div 2;
+ If Mounts[M].FreeClus<0 Then Begin
+  N:=0;
+  For C:=2 To Mounts[M].Clusters+1 Do If FatGet(M,C)=0 Then Inc(N);
+  Mounts[M].FreeClus:=N;
+ End;
+ FatFreeKB:=Mounts[M].FreeClus*Mounts[M].SecPerClus Div 2;
 End;
 
 Procedure ZeroCluster(M: Integer; C: Longint);
@@ -3716,7 +3787,7 @@ Begin
  ReleaseMemory(Cur);
  With Procs[Cur] Do Begin
   Home:=Mem_; Where:=Mem_; Size:=Total; PSP:=PSP_;
-  DosOfs:=0; DosSeg:=0;
+  DosOfs:=0; DosSeg:=0; RawKbd:=False;
   I:=Length(Name);
   While (I>0) And (Name[I]<>'/') Do Dec(I);
   Procs[Cur].Name:=Copy(Name,I+1,15);
@@ -4048,7 +4119,10 @@ Begin
  Case C.RCX Of
   0: If IsTty Then C.Ret:=1 Else C.Ret:=0;
   1: If IsTty Then C.Ret:=TtyMode Else SysIoctl:=ENOTTY;
-  2: If IsTty Then TtyMode:=C.RDX And 3 Else SysIoctl:=ENOTTY;
+  2: If IsTty Then Begin
+      TtyMode:=C.RDX And 3;
+      If TtyMode And TTYRAW<>0 Then Procs[Cur].RawKbd:=True;
+     End Else SysIoctl:=ENOTTY;
   3: If IsTty Then C.Ret:=TtyAvail Else SysIoctl:=ENOTTY;
   Else SysIoctl:=EINVAL;
  End;
@@ -4284,8 +4358,31 @@ Begin
  Equip:=MemW[$40:$10];
  NF:=0;
  If Equip And 1<>0 Then NF:=((Equip Shr 6) And 3)+1;
+ If (BootDrive<$80) And (NF<=BootDrive) Then NF:=BootDrive+1;
  For I:=0 To NF-1 Do If I<2 Then AddDisk(I,'fd'+Chr(48+I),0,0,0);
- NH:=Mem[$40:$75]; If NH>2 Then NH:=2;
+ { disques durs : compte du BIOS (0040:0075), sinon INT 13h AH=08h (DL =
+   nombre de disques), et au moins jusqu'a l'unite d'amorce }
+ NH:=Mem[$40:$75];
+ Asm
+  PUSH ES
+  PUSH DI
+  MOV AH,8
+  MOV DL,80h
+  PUSH BP
+  INT 13h
+  POP BP
+  POP DI
+  POP ES
+  JC @NoHd
+  MOV T,DL
+  JMP @Fin
+ @NoHd:
+  MOV T,0
+ @Fin:
+ End;
+ If T>NH Then NH:=T;
+ If (BootDrive>=$80) And (NH<BootDrive-$7F) Then NH:=BootDrive-$7F;
+ If NH>2 Then NH:=2;
  For I:=0 To NH-1 Do Begin
   D:=AddDisk($80+I,'hd'+Letters[I+1],0,0,0);
   If D<0 Then Exit;
@@ -4379,6 +4476,9 @@ Var
  Root: String;
 
 BEGIN
+ { le processus 0 (amorce) s'execute en mode noyau : l'horloge ne doit
+   jamais le preempter, meme apres l'activation de l'ordonnanceur }
+ InKernel:=1;
  { le secteur d'amorce (0000:7C00) contient encore le BPB }
  BootDrive:=Mem[0:$7C24];
  BootStart:=MemL[0:$7C1C];

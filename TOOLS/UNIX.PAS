@@ -1022,9 +1022,8 @@ Begin
  For I:=1 To 8 Do
   If SysMountInfo(I,M) Then
    If (M.Dir='/') Or (Copy(Cwd,1,Length(M.Dir))=M.Dir) Then
-    If Length(M.Dir)>L Then Begin Best:=I; L:=Length(M.Dir) End;
- If (Best=0) Or Not SysMountInfo(Best,M) Then Begin RAX:=$FFFF; Exit End;
- T:=M.Blocks; F:=M.Free;
+    If Length(M.Dir)>L Then Begin Best:=I; L:=Length(M.Dir); T:=M.Blocks; F:=M.Free End;
+ If Best=0 Then Begin RAX:=$FFFF; Exit End;
  If T>65535 Then Begin T:=65535 End;
  If F>T Then F:=T;
  RAX:=2; RCX:=512; RBX:=F; RDX:=T;
