@@ -9,7 +9,7 @@
     C := ((C xor B) * 31421 + 7) mod 65536
     D := ((D xor C) * 31421 + A) mod 65536
   puis les 64 bits A:B:C:D sont codes par groupes de 6 bits (poids forts
-  d'abord). Le meme calcul est fait par KERNEL16/BUILD.SH (Python). }
+  d'abord). Le meme calcul est fait sur l'hote par TOOLS/MKPASSWD.PAS (BUILD.SH). }
 
 Const
  CryptChars:String[64]='./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';

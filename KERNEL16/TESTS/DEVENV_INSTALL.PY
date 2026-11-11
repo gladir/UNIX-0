@@ -14,7 +14,7 @@
 #   L'ecran de l'emulateur est lu en reconnaissant les caracteres (police
 #   8x8 de l'emulateur, lignes de 14 points), pour attendre chaque question
 #   de l'installateur; chaque etape est capturee (PNG et texte) dans le
-#   dossier de sortie. Le disque installe est verifie par TOOLS/UFSCHK.PY.
+#   dossier de sortie. Le disque installe est verifie par TOOLS/UFSCHK.PAS.
 #   Usage : DEVENV=/chemin/devenv python3 DEVENV_INSTALL.PY [disquettes|cd]
 #           [dossier_de_sortie]
 #   Sous Linux : Xvfb, xdotool et ImageMagick (import) sont necessaires.
@@ -22,6 +22,8 @@ import os, re, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
+# verificateur UFS1 (TOOLS/UFSCHK.PAS, compile par BUILD.SH)
+UFSCHK = os.path.join(os.environ.get('W', '/tmp/unix0-build'), 'bin', 'ufschk')
 DEVENV = os.environ.get('DEVENV') or sys.exit('definir DEVENV (executable de DEVENV)')
 MODE = sys.argv[1] if len(sys.argv) > 1 else 'disquettes'
 OUT = os.path.abspath(sys.argv[2] if len(sys.argv) > 2 else 'devenv-install-' + MODE)
@@ -225,7 +227,7 @@ def main():
         time.sleep(5)
         wait_for(r'^\$$', 300)
         shot('session-invite')
-        r = subprocess.run([sys.executable, os.path.join(ROOT, 'TOOLS', 'UFSCHK.PY'), '--hd', disk],
+        r = subprocess.run([UFSCHK, '--hd', disk],
                            capture_output=True, text=True)
         print('UFS1 du disque installe : ' + r.stdout.strip().splitlines()[-1])
         want = 'racine : /dev/hda1 (UFS' if MODE != 'cd' else 'racine : /dev/hda2 (UFS'

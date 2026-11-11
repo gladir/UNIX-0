@@ -42,7 +42,7 @@ qemu-system-i386 -drive file=IMAGES/UNIX0-HD.IMG,format=raw,if=ide -boot c
 `RUNTESTS.SH` lance chaque programme de test comme `/etc/init` (TPROC :
 processus, signaux, exec, permissions; TFS : UFS et FAT16, liens, `core`;
 TSWAP : huit processus de 75 Ko qui ne tiennent qu'avec le va-et-vient),
-vérifie les systèmes de fichiers (`TOOLS/UFSCHK.PY`, `fsck.vfat`), puis
+vérifie les systèmes de fichiers (`TOOLS/UFSCHK.PAS`, `fsck.vfat`), puis
 `SESSION.PY` ouvre une session complète par la console série : getty, login
 (mot de passe), commandes du shell, tubes, arrière-plan, ^C, permissions,
 `passwd`, connexion de root.
@@ -55,9 +55,11 @@ le banc d'essai sans interface de DEVENV (`/KERNELTEST`, `/KTBOOTIMG`) : il se
 connecte en root et tape quelques commandes. L'installation s'y fait aussi
 (voir *Installation*).
 
-Prérequis sur l'hôte : Free Pascal (`fpc`) pour compiler UPC et MKIMAGE,
-`makefs` (racine UFS du disque dur), `python3`, et facultativement `nasm`
-(secteurs d'amorce, déjà fournis en `.BIN`) et `qemu-system-i386`.
+Prérequis sur l'hôte : Free Pascal (`fpc`) pour compiler UPC et les outils
+de `TOOLS` (tous écrits en Pascal : MKIMAGE, COFFINFO, UFSCHK, MKVOL, MKISO,
+MKPASSWD, MKEMBED), `makefs` (racine UFS du disque dur), et facultativement
+`nasm` (secteurs d'amorce, déjà fournis en `.BIN`) et `qemu-system-i386`;
+les essais sous QEMU et DEVENV (`TESTS/*.PY`) demandent aussi `python3`.
 
 Compilation du noyau seul : `UPC /K KERNEL.PAS` produit `KERNEL.SYS`, image
 plate chargée à 1000:0000, copiée sous le nom `UNIX` sur le disque d'amorce.
@@ -172,7 +174,7 @@ Les commandes de UNIX-0 (`/etc/init`, `/bin/*`) sont des fichiers COFF
 
 `s_vaddr` est l'adresse de la section par rapport au début de l'image ; le
 noyau charge chaque section à `chargement + s_vaddr`, met à zéro `.bss` et la
-pile, puis applique les relocalisations. `TOOLS/COFFINFO.PY` affiche et
+pile, puis applique les relocalisations. `TOOLS/COFFINFO.PAS` affiche et
 vérifie un exécutable COFF. La pile par défaut d'un programme UNIX-0 est de
 8 Ko (`{$M}` peut en demander davantage); sans section `.heap`, le tas
 initial est de 4 Ko et grandit ensuite par `break`.
@@ -320,9 +322,9 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
 * `UNIX0-INST2.IMG`, … : la racine complète en **volumes tar** (ustar)
   écrits directement sur la disquette, sans système de fichiers ; chaque
   volume commence par un fichier `VOLUME` (« UNIX-0 numéro total »), aucun
-  fichier n'est coupé entre deux volumes (`TOOLS/MKVOL.PY`). Il en faut
+  fichier n'est coupé entre deux volumes (`TOOLS/MKVOL.PAS`). Il en faut
   **3**, soit **4 disquettes de 1,44 Mo** en tout ;
-* `UNIX0-CD.ISO` : CD-ROM ISO 9660 amorçable (El Torito, `TOOLS/MKISO.PY`)
+* `UNIX0-CD.ISO` : CD-ROM ISO 9660 amorçable (El Torito, `TOOLS/MKISO.PAS`)
   en **émulation de disque dur** : le BIOS présente l'image du CD comme le
   disque 80h et le noyau la lit par l'INT 13h, sans pilote de CD-ROM ; elle
   contient la disquette 1 et les volumes dans `/dist`. Le disque émulé n'a
