@@ -6,7 +6,7 @@
 #   chaque programme de test (TPROC, TFS, TSWAP : va-et-vient) est installe comme /etc/init sur une copie de
 #   la racine UFS du disque dur, la console serie (COM1) est recueillie, puis
 #   les systemes de
-#   fichiers sont verifies : UFS1 par TOOLS/UFSCHK.PY, FAT16 par fsck.vfat
+#   fichiers sont verifies : UFS1 par TOOLS/UFSCHK.PAS, FAT16 par fsck.vfat
 #   (paquet dosfstools), s'il est present; enfin TESTS/SESSION.PY ouvre une
 #   session complete (getty, login, sh) par la console serie, et INSTALL.PY
 #   installe le systeme depuis les disquettes puis le CD-ROM.
@@ -39,11 +39,10 @@ for t in TPROC TFS TSWAP; do
     echo "ECHEC $t"; fail=1
   else echo "OK $t"; fi
   if [ $t = TFS ]; then
-    python3 "$ROOT/TOOLS/UFSCHK.PY" --hd "$T/$t.img" | tail -1 | sed 's/^/UFS : /'
-    python3 "$ROOT/TOOLS/UFSCHK.PY" --hd "$T/$t.img" > /dev/null || fail=1
+    "$W/bin/ufschk" --hd "$T/$t.img" | tail -1 | sed 's/^/UFS : /'
+    "$W/bin/ufschk" --hd "$T/$t.img" > /dev/null || fail=1
     if command -v fsck.vfat > /dev/null; then
-      dd if="$T/$t.img" of="$T/fat.img" bs=512 skip=63 count=$(python3 -c "
-import struct;d=open('$T/$t.img','rb').read(512);print(struct.unpack_from('<I',d,458)[0])") 2>/dev/null
+      dd if="$T/$t.img" of="$T/fat.img" bs=512 skip=63 count=$(od -An -tu4 -j458 -N4 "$T/$t.img" | tr -d " ") 2>/dev/null
       if fsck.vfat -n "$T/fat.img" > "$T/fsck.log" 2>&1; then echo "FAT16 : fsck.vfat sans erreur"
       else echo "FAT16 : fsck.vfat signale des erreurs"; cat "$T/fsck.log"; fail=1; fi
     fi

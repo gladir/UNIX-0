@@ -4,8 +4,11 @@
 # @website(https://www.gladir.com/unix-0)
 # @description: Construit UNIX-0 et les images de disque amorcables de IMAGES/.
 #
-#  1. compile le compilateur Unix Pascal (TOOLS/UPC.PAS) et l'outil
-#     TOOLS/MKIMAGE.PAS avec Free Pascal (fpc), sur la machine hote;
+#  1. compile avec Free Pascal (fpc), sur la machine hote, le compilateur
+#     Unix Pascal (TOOLS/UPC.PAS) et les outils de TOOLS : MKIMAGE (images
+#     de disque), COFFINFO (verification des executables), UFSCHK
+#     (verification UFS1), MKVOL (volumes tar), MKISO (CD-ROM El Torito) et
+#     MKPASSWD (mots de passe de /etc/passwd);
 #  2. assemble le secteur d'amorce et le MBR (nasm), si nasm est present
 #     (sinon les fichiers BOOTSECT.BIN et MBR.BIN deja fournis sont utilises);
 #  3. compile le noyau : UPC /K KERNEL.PAS -> KERNEL.SYS (copie sous le nom
@@ -36,11 +39,14 @@ rm -rf "$W"; mkdir -p "$W/bin" "$W/src" "$W/log"
 
 echo "== Outils (Free Pascal)"
 # copies : TOOLS/UNIX.PAS (unite de UNIX-0) masquerait l'unite unix de FPC
-mkdir -p "$W/tools"; cp "$ROOT/TOOLS/UPC.PAS" "$ROOT/TOOLS/MKIMAGE.PAS" "$W/tools/"
-( cd "$W/tools" && $FPC -Mtp -O1 -FE"$W/bin" -o"$W/bin/upc" UPC.PAS ) > "$W/log/upc.log" 2>&1 ||
-  { tail -20 "$W/log/upc.log"; exit 1; }
-( cd "$W/tools" && $FPC -Mtp -O1 -FE"$W/bin" -o"$W/bin/mkimage" MKIMAGE.PAS ) > "$W/log/mkimage.log" 2>&1 ||
-  { tail -20 "$W/log/mkimage.log"; exit 1; }
+mkdir -p "$W/tools"
+for t in UPC MKIMAGE COFFINFO UFSCHK MKVOL MKISO MKPASSWD; do
+  cp "$ROOT/TOOLS/$t.PAS" "$W/tools/"
+  l=$(echo $t | tr 'A-Z' 'a-z')
+  case $t in UPC|MKIMAGE) m=-Mtp ;; *) m= ;; esac
+  ( cd "$W/tools" && $FPC $m -O1 -FE"$W/bin" -o"$W/bin/$l" $t.PAS ) > "$W/log/$l.log" 2>&1 ||
+    { tail -20 "$W/log/$l.log"; exit 1; }
+done
 rm -f "$W/bin"/*.o
 UPC="$W/bin/upc"
 
@@ -67,7 +73,7 @@ for f in "$W"/src/*.PAS; do
 done
 [ $fail = 0 ] || exit 1
 # les commandes UNIX-0 sont des executables COFF : verification
-python3 "$ROOT/TOOLS/COFFINFO.PY" $(cd "$W/src" && ls *.PAS | sed 's/\.PAS$//' | grep -v -x KERNEL | sed "s|^|$W/src/|") > "$W/log/coff.log" ||
+"$W/bin/coffinfo" $(cd "$W/src" && ls *.PAS | sed 's/\.PAS$//' | grep -v -x KERNEL | sed "s|^|$W/src/|") > "$W/log/coff.log" ||
   { grep -B3 ERREUR "$W/log/coff.log"; exit 1; }
 echo "   $(grep -c f_magic "$W/log/coff.log") executables COFF verifies"
 
@@ -94,29 +100,7 @@ mkroot() {   # mkroot REPERTOIRE LISTE_DE_COMMANDES
   done
 }
 # hachage des mots de passe (meme calcul que KERNEL16/USR/CRYPT.INC)
-crypt() {
-  python3 - "$1" "$2" <<'PYEOF'
-import sys
-pw, salt = sys.argv[1], (sys.argv[2] + '..')[:2]
-a, b, c, d = 0x6A09, 0xBB67, 0x3C6E, 0xA54F
-for r in range(32):
-    for ch in (salt + pw).encode('latin-1'):
-        a = ((a ^ ch) * 31421 + 1) & 0xFFFF
-        b = ((b ^ a) * 31421 + ch) & 0xFFFF
-        c = ((c ^ b) * 31421 + 7) & 0xFFFF
-        d = ((d ^ c) * 31421 + a) & 0xFFFF
-bits = (a << 48) | (b << 32) | (c << 16) | d
-al = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-out = salt
-for k in range(11):
-    v = 0
-    for r in range(6):
-        n = k * 6 + r
-        v = v * 2 + ((bits >> (63 - n)) & 1 if n < 64 else 0)
-    out += al[v]
-print(out)
-PYEOF
-}
+crypt() { "$W/bin/mkpasswd" "$1" "$2"; }
 ALL=$(cd "$W/src" && ls *.PAS | sed 's/\.PAS$//' | grep -v -x -e KERNEL -e INIT -e GETTY)
 CORE="SHELL LOGIN PASSWD PS KILL ID MKDIR RMDIR RM CAT LS ECHO PWD CP MV CHMOD HEAD WC GREP DF UNAME REBOOT"
 
@@ -169,9 +153,9 @@ fi
 #                       sh, install et quelques commandes; /mdec/mbr et
 #                       /mdec/bootsect (secteurs d'amorce du disque dur)
 #   UNIX0-INST2.IMG...  disquettes de donnees : volumes tar de la racine
-#                       complete (TOOLS/MKVOL.PY), lus par install sur /dev/fd0
+#                       complete (TOOLS/MKVOL.PAS), lus par install sur /dev/fd0
 #   UNIX0-CD.ISO        CD-ROM El Torito (emulation de disque dur) : la
-#                       disquette 1 et les volumes dans /dist (TOOLS/MKISO.PY)
+#                       disquette 1 et les volumes dans /dist (TOOLS/MKISO.PAS)
 if [ -d "$W/ufsroot" ]; then
   echo "== Distribution (installation)"
   rm -f "$ROOT"/IMAGES/UNIX0-INST*.IMG
@@ -184,7 +168,7 @@ if [ -d "$W/ufsroot" ]; then
   printf 'Pour installer UNIX-0 sur le disque dur, connectez-vous sous le nom\n"install" (root ouvre un interpreteur de commandes).\n\n' > "$W/inst/etc/issue"
   printf 'Support d installation de UNIX-0.\n' > "$W/inst/etc/motd"
   rm -rf "$W/vol"; mkdir -p "$W/vol"
-  python3 "$ROOT/TOOLS/MKVOL.PY" "$W/ufsroot" "$W/vol/INST" 2 | tee "$W/log/mkvol.log"
+  "$W/bin/mkvol" "$W/ufsroot" "$W/vol/INST" 2 | tee "$W/log/mkvol.log"
   for f in "$W"/vol/INST*.IMG; do cp "$f" "$ROOT/IMAGES/UNIX0-$(basename "$f")"; done
   "$W/bin/mkimage" FLOPPY "$ROOT/IMAGES/UNIX0-INST1.IMG" "$HERE/BOOTSECT.BIN" "$W/inst" 1440
   NF=$(ls "$ROOT"/IMAGES/UNIX0-INST*.IMG | wc -l)
@@ -197,6 +181,6 @@ if [ -d "$W/ufsroot" ]; then
   done
   "$W/bin/mkimage" HD "$W/cdhd.img" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/cd" 8 > "$W/log/cdhd.log"
   cp "$ROOT/IMAGES/LISEZMOI.TXT" "$W/LISEZMOI.TXT"
-  python3 "$ROOT/TOOLS/MKISO.PY" "$ROOT/IMAGES/UNIX0-CD.ISO" "$W/cdhd.img" "$W/LISEZMOI.TXT"
+  "$W/bin/mkiso" "$ROOT/IMAGES/UNIX0-CD.ISO" "$W/cdhd.img" "$W/LISEZMOI.TXT"
 fi
 ls -l "$ROOT/IMAGES"

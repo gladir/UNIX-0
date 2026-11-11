@@ -8,7 +8,7 @@
 #      installation par defaut (UFS seul, amorce UFS);
 #   2. depuis le CD-ROM (UNIX0-CD.ISO, El Torito) : FAT16 d'amorce + UFS,
 #      puis FAT16 seul, sur d'autres disques vierges.
-#   Chaque disque installe est verifie (UFS1 par TOOLS/UFSCHK.PY, FAT16 par
+#   Chaque disque installe est verifie (UFS1 par TOOLS/UFSCHK.PAS, FAT16 par
 #   fsck.vfat s'il est present), puis demarre seul : connexion de root et
 #   quelques commandes.
 #   Usage : python3 INSTALL.PY [dossier_IMAGES]   (code de sortie 0 si OK)
@@ -16,6 +16,8 @@ import os, re, shutil, socket, struct, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
+# verificateur UFS1 (TOOLS/UFSCHK.PAS, compile par BUILD.SH)
+UFSCHK = os.path.join(os.environ.get('W', '/tmp/unix0-build'), 'bin', 'ufschk')
 IMG = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'IMAGES')
 TMP = tempfile.mkdtemp()
 fails = 0
@@ -90,7 +92,7 @@ def check_disk(path, what):
         typ = d[446 + 16 * i + 4]
         start, size = struct.unpack_from('<II', d, 446 + 16 * i + 8)
         if typ == 0xA5:
-            r = subprocess.run([sys.executable, os.path.join(ROOT, 'TOOLS', 'UFSCHK.PY'),
+            r = subprocess.run([UFSCHK,
                                 path, str(start)], capture_output=True, text=True)
             ok(r.returncode == 0, '%s : UFS1 coherent (%s)' % (what, r.stdout.strip().splitlines()[-1]))
         elif typ in (4, 6) and shutil.which('fsck.vfat'):

@@ -287,27 +287,35 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 		</tr>
 		<tr>
 			<td><b>TOOLS/UNIX.PAS</b></td>
-			<td>L'unité UNIX (appels système et couche libc de la cible UNIX-0), intégrée à UPC par TOOLS/MKEMBED.PY.</td>
+			<td>L'unité UNIX (appels système et couche libc de la cible UNIX-0), intégrée à UPC par TOOLS/MKEMBED.PAS.</td>
 		</tr>
 		<tr>
 			<td><b>TOOLS/MKIMAGE.PAS</b></td>
 			<td>Fabrique les images de disquette FAT12 et de disque dur (FAT16 + UFS).</td>
 		</tr>
 		<tr>
-			<td><b>TOOLS/COFFINFO.PY</b></td>
+			<td><b>TOOLS/COFFINFO.PAS</b></td>
 			<td>Affiche et vérifie un exécutable COFF de UNIX-0 (format produit par UPC /X).</td>
 		</tr>
 		<tr>
-			<td><b>TOOLS/UFSCHK.PY</b></td>
+			<td><b>TOOLS/UFSCHK.PAS</b></td>
 			<td>Vérifie la cohérence d'un système de fichiers UFS1.</td>
 		</tr>
 		<tr>
-			<td><b>TOOLS/MKVOL.PY</b></td>
+			<td><b>TOOLS/MKVOL.PAS</b></td>
 			<td>Découpe la racine du système en volumes tar de disquette (distribution).</td>
 		</tr>
 		<tr>
-			<td><b>TOOLS/MKISO.PY</b></td>
+			<td><b>TOOLS/MKISO.PAS</b></td>
 			<td>Fabrique le CD-ROM ISO 9660 amorçable (El Torito, émulation de disque dur).</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/MKEMBED.PAS</b></td>
+			<td>Intègre le source de l'unité UNIX (TOOLS/UNIX.PAS) dans UPC.PAS, à relancer après chaque modification de UNIX.PAS.</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/MKPASSWD.PAS</b></td>
+			<td>Calcule le champ mot de passe de /etc/passwd (même hachage que login et passwd).</td>
 		</tr>
 		<tr>
 			<td><b>IMAGES</b></td>

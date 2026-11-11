@@ -6,7 +6,7 @@
    noyau UNIX-0 (INT 80h) et bibliotheque "libc" de la cible UNIX-0.
 
   Cette unite est integree au compilateur UPC (regeneree dans UPC.PAS par
-  TOOLS/MKEMBED.PY) et liee automatiquement a tout programme compile avec
+  TOOLS/MKEMBED.PAS) et liee automatiquement a tout programme compile avec
   l'option /X, avant toute autre unite.
 
   Convention des appels systeme UNIX-0 (INT 80h) :

@@ -48,7 +48,7 @@
      CAT) : f_magic 0153h (I286LMAGIC, 286/8086 modele large), en-tete a.out
      OMAGIC, une section .text par segment de code, .data, .bss, .stack
      (et .heap), relocalisations de segment R_SEG12; voir WriteCoff et
-     TOOLS/COFFINFO.PY. Le symbole conditionnel UNIX0 est defini.
+     TOOLS/COFFINFO.PAS. Le symbole conditionnel UNIX0 est defini.
 
   Le reste de ce commentaire decrit le compilateur TPC d'origine. *)
 
@@ -1385,7 +1385,7 @@ const PrinterSource: array[1..10] of string[255] = (
  ' {$I-} Rewrite(Lst); {$I+}',
  ' If IOResult<>0 Then ;',
  'End.');
-{ --- debut UnixSource (genere par MKEMBED.PY) --- }
+{ --- debut UnixSource (genere par MKEMBED) --- }
 const UnixSource: array[1..1689] of string[255] = (
  '{ @author: Sylvain Maltais (support@gladir.com)',
  '  @created: 2026',
@@ -1395,7 +1395,7 @@ const UnixSource: array[1..1689] of string[255] = (
  '   noyau UNIX-0 (INT 80h) et bibliotheque "libc" de la cible UNIX-0.',
  '',
  '  Cette unite est integree au compilateur UPC (regeneree dans UPC.PAS par',
- '  TOOLS/MKEMBED.PY) et liee automatiquement a tout programme compile avec',
+ '  TOOLS/MKEMBED.PAS) et liee automatiquement a tout programme compile avec',
  '  l''option /X, avant toute autre unite.',
  '',
  '  Convention des appels systeme UNIX-0 (INT 80h) :',
