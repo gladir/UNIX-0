@@ -242,6 +242,13 @@ Pour compiler un programme pour le système d'exploitation UNIX-0 lui-même (app
 
 <h2>Système d'exploitation UNIX-0 (KERNEL16)</h2>
 
+<table>
+	<tr>
+		<td><img width="320" height="200" alt="image" src="https://github.com/user-attachments/assets/710b3554-b44c-4807-8179-1917de14df47" /></td>
+		<td><img width="320" height="200" alt="image" src="https://github.com/user-attachments/assets/9a5ed32a-3da3-4d3e-bd9d-a031a5090b41" /></td>
+	</tr>
+</table>
+
 Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/8088, mode réel), écrit dans un seul fichier Pascal (<b>KERNEL16/KERNEL.PAS</b>) et compilé en une seule image monolithique de plus de 64 Ko. Son interface suit celle de UNIX V7 : appels système INT 80h avec les numéros et la sémantique de V7 (fork, exec avec argc/argv sur la pile, wait, signal avec gestionnaires, alarm, stat, ioctl sgttyb, setuid, ...), utilisateurs et permissions, ordonnanceur préemptif à priorités, gestion de la mémoire par table des zones libres avec va-et-vient sur disque (swapping), systèmes de fichiers UFS1 (FreeBSD, racine du disque dur), FAT12 et FAT16, /dev, tubes, cache à écriture différée et console. Une session complète s'y ouvre : init, getty, login (/etc/passwd) et un shell UNIX (PATH, redirections, tubes, arrière-plan). Voir <a href="KERNEL16/LISEZMOI.md">KERNEL16/LISEZMOI.md</a>.
 
 <table>
