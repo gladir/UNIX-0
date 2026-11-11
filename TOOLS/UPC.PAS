@@ -1386,7 +1386,7 @@ const PrinterSource: array[1..10] of string[255] = (
  ' If IOResult<>0 Then ;',
  'End.');
 { --- debut UnixSource (genere par MKEMBED.PY) --- }
-const UnixSource: array[1..1664] of string[255] = (
+const UnixSource: array[1..1685] of string[255] = (
  '{ @author: Sylvain Maltais (support@gladir.com)',
  '  @created: 2026',
  '  @website(https://www.gladir.com/unix-0)',
@@ -1564,6 +1564,7 @@ const UnixSource: array[1..1664] of string[255] = (
  'Function WIfExited(Status: Integer): Boolean;',
  'Function WExitStatus(Status: Integer): Integer;',
  'Function WTermSig(Status: Integer): Integer;',
+ 'Function WCoreDump(Status: Integer): Boolean;',
  'Function SysCreat(Path: String; Mode: Word): Integer;',
  'Function SysLink(OldPath, NewPath: String): Integer;',
  'Function SysUnlink(Path: String): Integer;',
@@ -1589,6 +1590,8 @@ const UnixSource: array[1..1664] of string[255] = (
  'Function GetPPid: Integer;',
  'Function GetUid: Integer;',
  'Function GetGid: Integer;',
+ 'Function GetEUid: Integer;',
+ 'Function GetEGid: Integer;',
  'Function SetUid(Uid: Integer): Integer;',
  'Function SetGid(Gid: Integer): Integer;',
  'Function SysMount(Special, Dir: String; FsType: Word): Integer;',
@@ -1820,6 +1823,12 @@ const UnixSource: array[1..1664] of string[255] = (
  ' WTermSig:=Status And $7F;',
  'End;',
  '',
+ 'Function WCoreDump(Status: Integer): Boolean;',
+ '{ le processus termine par un signal a laisse un fichier core }',
+ 'Begin',
+ ' WCoreDump:=Status And $80<>0;',
+ 'End;',
+ '',
  'Function SysCreat(Path: String; Mode: Word): Integer;',
  'Begin',
  ' SetRegs(SYS_creat,0,Mode,0); SetPath(Path); SysCreat:=Result16;',
@@ -2019,6 +2028,7 @@ const UnixSource: array[1..1664] of string[255] = (
  'End;',
  '',
  'Function GetUid: Integer;',
+ '{ utilisateur reel (getuid rend aussi l''effectif dans DX, comme V7) }',
  'Begin',
  ' SetRegs(SYS_getuid,0,0,0); GetUid:=Result16;',
  'End;',
@@ -2026,6 +2036,17 @@ const UnixSource: array[1..1664] of string[255] = (
  'Function GetGid: Integer;',
  'Begin',
  ' SetRegs(SYS_getgid,0,0,0); GetGid:=Result16;',
+ 'End;',
+ '',
+ 'Function GetEUid: Integer;',
+ '{ utilisateur effectif (bit set-uid) }',
+ 'Begin',
+ ' SetRegs(SYS_getuid,0,0,0); DoSys; GetEUid:=SDX;',
+ 'End;',
+ '',
+ 'Function GetEGid: Integer;',
+ 'Begin',
+ ' SetRegs(SYS_getgid,0,0,0); DoSys; GetEGid:=SDX;',
  'End;',
  '',
  'Function SetUid(Uid: Integer): Integer;',
@@ -5639,6 +5660,7 @@ Var
  KernelMode, HaveKernel: Boolean;
  HasSegmentUnits: Boolean;
  KernelOut, UnixTarget: Boolean;
+ DefaultStack: Word;  { pile par defaut : 16 Ko (TP), 8 Ko pour UNIX-0 }
    { /K image plate de noyau, /X cible UNIX-0 }
  KernelBase: Word;
  CodeLimit: Word;
@@ -18887,6 +18909,9 @@ Begin
     { Unix Pascal : cible UNIX-0 }
     If Arg<>'' Then CLIError('Option /X incorrecte');
     UnixTarget:=True; Define('UNIX0');
+    { UNIX-0 : pile par defaut de 8 Ko (memoire de 640 Ko partagee par
+      tous les processus); la directive M peut en demander davantage }
+    DefaultStack:=8192;
    End;
    'L':Begin
     { Tampon de liaison sur disque: l'image est deja construite en memoire
@@ -19039,13 +19064,14 @@ BEGIN
  CheckLayout;
  StartTime:=ClockHundredths; TotalLines:=0; HasSegmentUnits:=False;
  CodeLimit:=MaxImage-1;
- StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+ DefaultStack:=16384; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
  OptionBits:=$171D; { defauts TPC 7.0: A+ D+ E+ I+ L+ S+ V+ X+;
    B F G N O P Q R T desactives }
  TokenLine:=1; TokenColumn:=1;
  Define('VER70'); Define('MSDOS'); Define('CPU86');
  Banner;
  ParseArguments;
+ StackSize:=DefaultStack;
  If InspectName<>'' Then Begin
   SourceName:=InspectName; InspectTPU; Halt(0)
  End;
@@ -19121,7 +19147,7 @@ BEGIN
   Move(FrameNext,FramePred,SizeOf(FramePred)); FillChar(FrameNext,
     SizeOf(FrameNext),0); ProcOrd:=0;
   Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
-  OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+  OptionBits:=InitialOptions; StackSize:=DefaultStack; MinHeap:=0; MaxHeap:=$FFFF;
   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0;
     TotalEmitted:=0;
   JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
@@ -19178,7 +19204,7 @@ BEGIN
   FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,SizeOf(FrameNext),
     0); ProcOrd:=0;
   Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
-  OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+  OptionBits:=InitialOptions; StackSize:=DefaultStack; MinHeap:=0; MaxHeap:=$FFFF;
   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0;
     TotalEmitted:=0;
   JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
@@ -19194,7 +19220,7 @@ BEGIN
      SizeOf(FrameNext),0); ProcOrd:=0;
    Move(InitialDefines,Defines,SizeOf(Defines));
      DefineCount:=InitialDefineCount;
-   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+   OptionBits:=InitialOptions; StackSize:=DefaultStack; MinHeap:=0; MaxHeap:=$FFFF;
    TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0;
      TotalEmitted:=0;
    JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;

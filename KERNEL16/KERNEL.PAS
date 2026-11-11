@@ -14,20 +14,26 @@
   limite de 64 Ko de code d'un segment 8086. Les donnees du noyau occupent un
   segment de 64 Ko (DS).
 
-  Organisation inspiree de UNIX V6 (Lions) et de xv6 (MIT 6.828) :
-   - table des processus (Procs), pile noyau par processus, swtch (KSwitch),
-     sleep/wakeup sur des canaux, ordonnanceur a tourniquet preemptif
-     (interruption 08h de l'horloge, quantum de 3 tops);
-   - appels systeme par INT 80h (numeros proches de Linux i386);
+  Organisation inspiree de UNIX V6 (Lions), de UNIX V7 et de xv6 (MIT
+  6.828) :
+   - table des processus (Procs), pile noyau par processus (allouee a sa
+     creation), swtch (KSwitch), sleep/wakeup sur des canaux, ordonnanceur
+     preemptif a priorites (temps processeur recent et nice, comme p_cpu de
+     V7; interruption 08h de l'horloge, quantum de 3 tops);
+   - appels systeme par INT 80h, numeros et semantique de UNIX V7 (puis de
+     4.2BSD) : etat de wait, errno, stat, sgttyb, signaux avec gestionnaires,
+     alarm, uid/gid reels et effectifs, set-uid, permissions, core;
    - memoire : table des zones libres (coremap) en paragraphes; fork par
      echange de memoire (les images 8086 contiennent des segments absolus :
      le fils partage l'adresse du pere et les images sont permutees a chaque
-     commutation, comme le swapping de UNIX V1), exec charge un executable MZ
-     dans une nouvelle zone;
-   - systemes de fichiers : FAT12, FAT16 et UFS1 (FreeBSD), /dev, tubes;
-     montage par chemin (table des montages), cache de secteurs;
+     commutation, comme le swapping de UNIX V1), exec charge un executable
+     COFF (ou MZ) avec argc/argv/envp sur la pile; break agrandit l'image;
+   - systemes de fichiers : UFS1 (FreeBSD, racine du disque dur), FAT12 et
+     FAT16 (disquettes, partition d'amorce), /dev, tubes; montage par chemin,
+     cache de secteurs a ecriture differee (sync, toutes les 30 secondes);
    - console : ecran et clavier du BIOS, recopie sur COM1, discipline de
-     ligne canonique (effacement, ^U, ^C = SIGINT, ^D = fin de fichier).
+     ligne de V7 (RAW, CBREAK, ECHO, CRMOD; ^C = SIGINT, ^\ = SIGQUIT,
+     ^D = fin de fichier).
 
   Carte memoire :
    00000-003FF vecteurs d'interruption  00400-004FF donnees du BIOS
@@ -124,13 +130,15 @@ Type
   SigH: Array[1..NSIG-1] Of Longint;  { gestionnaires (0 = SIG_DFL) }
   SigTramp: Longint;   { trampoline de la libc pour les gestionnaires }
   Alarm: Longint;      { top d'horloge de SIGALRM (0 = aucune alarme) }
-  Uid, Gid: Word;      { utilisateur et groupe }
+  Uid, Gid: Word;      { utilisateur et groupe effectifs (permissions) }
+  RUid, RGid: Word;    { utilisateur et groupe reels }
+  DosProg: Boolean;    { executable MZ (programme DOS) }
   Umask: Word;
   Nice: Integer;
+  CpuRecent: Word;     { temps processeur recent (tops, divise par 2 par seconde) }
   ChildTicks: Longint; { temps processeur des fils attendus (times) }
   ArgPtr: Longint;     { argc/argv/envp sur la pile (exec) }
   Borrowed: Boolean;   { vfork : la memoire est celle du pere }
-  RawKbd: Boolean;     { a mis le terminal en mode brut : ^C est une donnee }
   SysCtx: Array[0..31] Of Byte;  { contexte de l'appel systeme en cours }
   CpuTicks: Longint;   { temps processeur (tops d'horloge) }
   Fd: Array[0..NOFILE-1] Of Byte;  { 0 = libre, sinon index fichier }
@@ -560,6 +568,7 @@ Procedure CoreFree(Sg, Paras: Word);
 Function CoreFreeTotal: Word;
 Function CoreLargest: Word;
 Function CoreGrow(Sg, Paras: Word): Boolean;
+Function CoreAllocHigh(Paras: Word): Word;
 
 SegmentImplementation
 
@@ -633,6 +642,27 @@ Begin
  CoreLargest:=T;
 End;
 
+Function CoreAllocHigh(Paras: Word): Word;
+{ allocation au haut de la memoire (piles noyau), pour laisser le bas,
+  d'un seul tenant, aux images des processus }
+Var I,J: Integer;
+Begin
+ CoreAllocHigh:=0;
+ If Paras=0 Then Exit;
+ For I:=MapCount DownTo 1 Do
+  If MapSize[I]>=Paras Then Begin
+   Dec(MapSize[I],Paras);
+   CoreAllocHigh:=MapAddr[I]+MapSize[I];
+   If MapSize[I]=0 Then Begin
+    For J:=I To MapCount-1 Do Begin
+     MapAddr[J]:=MapAddr[J+1]; MapSize[J]:=MapSize[J+1];
+    End;
+    Dec(MapCount);
+   End;
+   Exit;
+  End;
+End;
+
 Function CoreGrow(Sg, Paras: Word): Boolean;
 { prend Paras paragraphes libres a partir de Sg : agrandissement sur place
   d'une image dont la fin est en Sg (break) }
@@ -671,6 +701,7 @@ Var
  OldInt08, OldInt1B: Pointer;
  BreakFlag: Boolean;           { Ctrl+Break }
  IdleHook: Pointer;            { scrutation du terminal (KTty) }
+ SyncHook: Pointer;            { ecriture des tampons modifies (KDisk) }
  NextPid: Integer;
  IdleTicks: Longint;
  SwitchStamp: Longint;
@@ -966,6 +997,14 @@ Begin
  End;
 End;
 
+Procedure CallSyncHook; Assembler;
+Asm
+ CMP WORD PTR SyncHook+2,0
+ JE @Fin
+ CALL DWORD PTR SyncHook
+@Fin:
+End;
+
 Procedure CallIdleHook; Assembler;
 Asm
  CMP WORD PTR IdleHook+2,0
@@ -974,10 +1013,23 @@ Asm
 @Fin:
 End;
 
+Var
+ LastDecay, LastSync: Longint;
+
 Procedure CheckTimers;
-{ reveils temporises et alarmes (SIGALRM) }
+{ reveils temporises, alarmes (SIGALRM) et, chaque seconde, decroissance
+  du temps processeur recent (priorites, comme p_cpu de UNIX V7) }
 Var I: Integer;
 Begin
+ If (Ticks-LastDecay>=18) Or (Ticks<LastDecay) Then Begin
+  LastDecay:=Ticks;
+  For I:=1 To NPROC-1 Do Procs[I].CpuRecent:=Procs[I].CpuRecent Shr 1;
+ End;
+ { toutes les 30 secondes : tampons modifies ecrits sur le disque (comme
+   /etc/update de UNIX V7) }
+ If (Ticks-LastSync>=546) Or (Ticks<LastSync) Then Begin
+  LastSync:=Ticks; CallSyncHook;
+ End;
  For I:=1 To NPROC-1 Do Begin
   With Procs[I] Do
    If (Stat=PSLEEP) And (Wake<>0) And (Ticks>=Wake) Then Begin
@@ -990,10 +1042,18 @@ Begin
  End;
 End;
 
+Function Prio(P: Integer): Integer;
+{ priorite d'un processus pret (la plus petite valeur passe d'abord) :
+  temps processeur recent, plus la valeur de nice }
+Begin
+ Prio:=Integer(Procs[P].CpuRecent)+Procs[P].Nice*4;
+End;
+
 Procedure Swtch;
-{ Elit le prochain processus pret (tourniquet) et lui donne le processeur.
-  Si aucun n'est pret, attend une interruption (HLT). }
-Var N,I: Integer; T: Longint;
+{ Elit le processus pret de meilleure priorite (tourniquet a priorite egale)
+  et lui donne le processeur. Si aucun n'est pret, attend une interruption
+  (HLT). }
+Var N,I,K,Best,Pr: Integer; T: Longint;
 Begin
  { controle de debordement de la pile noyau (motif CCh au fond) }
  If (Cur>0) And (MemW[Procs[Cur].KStack:0]<>$CCCC) Then
@@ -1003,12 +1063,14 @@ Begin
  Repeat
   CallIdleHook;
   CheckTimers;
-  N:=-1; I:=Cur;
-  Repeat
+  N:=-1; I:=Cur; Best:=MaxInt;
+  For K:=1 To NPROC-1 Do Begin
    Inc(I); If I>=NPROC Then I:=1;
-   If Procs[I].Stat=PRUN Then N:=I;
-  Until (N>=0) Or (I=Cur);
-  If (N<0) And (Cur>0) And (Procs[Cur].Stat=PRUN) Then N:=Cur;
+   If Procs[I].Stat=PRUN Then Begin
+    Pr:=Prio(I);
+    If Pr<Best Then Begin Best:=Pr; N:=I End;
+   End;
+  End;
   If N<0 Then Begin
    T:=Ticks;
    Asm
@@ -1020,7 +1082,9 @@ Begin
  Until N>=0;
  Quantum:=QUANTUM;
  { temps processeur du processus sortant }
- Inc(Procs[Cur].CpuTicks,Ticks-SwitchStamp); SwitchStamp:=Ticks;
+ Inc(Procs[Cur].CpuTicks,Ticks-SwitchStamp);
+ If Procs[Cur].CpuRecent<1000 Then Inc(Procs[Cur].CpuRecent,Ticks-SwitchStamp);
+ SwitchStamp:=Ticks;
  If N=Cur Then Exit;
  MakeResident(N);
  SwSaveP:=Cur;
@@ -1093,7 +1157,7 @@ SegmentEnd;
 
 { ====================================================================== }
 SegmentUnit KDisk;
-{ Disques du BIOS (INT 13h) et cache de secteurs (ecriture immediate). }
+{ Disques du BIOS (INT 13h) et cache de secteurs (ecriture differee). }
 Uses KTypes,KLib;
 SegmentInterface
 
@@ -1101,6 +1165,7 @@ Var
  BufDev: Array[1..NBUF] Of Byte;     { $FF = libre }
  BufLBA: Array[1..NBUF] Of Longint;
  BufAge: Array[1..NBUF] Of Longint;
+ BufDirty: Array[1..NBUF] Of Boolean;
  BufClock: Longint;
  DiskErrors: Word;
 
@@ -1109,6 +1174,8 @@ Function DiskIO(D: Integer; LBA: Longint; Sg, Os: Word; Wr: Boolean): Boolean;
 Function BRead(D: Integer; LBA: Longint): Integer;
 Function BGet(D: Integer; LBA: Longint): Integer;
 Function BWrite(B: Integer): Boolean;
+Procedure BFlush(D: Integer);
+Procedure BSync;
 Function BufSeg(B: Integer): Word;
 Procedure BInval(D: Integer);
 Function AddDisk(Bios: Byte; Name: String; Start, Sectors: Longint;
@@ -1164,7 +1231,7 @@ End;
 Procedure DiskInit;
 Var I: Integer;
 Begin
- For I:=1 To NBUF Do Begin BufDev[I]:=$FF; BufAge[I]:=0 End;
+ For I:=1 To NBUF Do Begin BufDev[I]:=$FF; BufAge[I]:=0; BufDirty[I]:=False End;
  BufClock:=0;
 End;
 
@@ -1246,7 +1313,16 @@ Begin
   If (BufDev[I]=D) And (BufLBA[I]=LBA) Then Begin Find:=I; Exit End;
 End;
 
+Procedure BOut(B: Integer);
+{ ecriture d'un tampon modifie (ecriture differee) }
+Begin
+ If BufDirty[B] And (BufDev[B]<>$FF) Then
+  DiskIO(BufDev[B],BufLBA[B],BufSeg(B),0,True);
+ BufDirty[B]:=False;
+End;
+
 Function Victim: Integer;
+{ tampon libre, sinon le plus ancien (ecrit s'il a ete modifie) }
 Var I,V: Integer;
 Begin
  V:=1;
@@ -1254,6 +1330,7 @@ Begin
   If BufDev[I]=$FF Then Begin Victim:=I; Exit End;
   If BufAge[I]<BufAge[V] Then V:=I;
  End;
+ BOut(V);
  Victim:=V;
 End;
 
@@ -1286,13 +1363,31 @@ Begin
 End;
 
 Function BWrite(B: Integer): Boolean;
+{ ecriture differee (bdwrite de UNIX) : le tampon est marque modifie et
+  sera ecrit quand il sera reutilise, par sync, au demontage ou par
+  l'ecriture periodique (toutes les 30 secondes) }
 Begin
- BWrite:=DiskIO(BufDev[B],BufLBA[B],BufSeg(B),0,True);
+ BufDirty[B]:=True;
+ BWrite:=True;
+End;
+
+Procedure BFlush(D: Integer);
+{ ecrit les tampons modifies du disque D (-1 : tous) }
+Var I: Integer;
+Begin
+ For I:=1 To NBUF Do
+  If BufDirty[I] And ((D<0) Or (BufDev[I]=D)) Then BOut(I);
+End;
+
+Procedure BSync;
+Begin
+ BFlush(-1);
 End;
 
 Procedure BInval(D: Integer);
 Var I: Integer;
 Begin
+ BFlush(D);
  For I:=1 To NBUF Do If BufDev[I]=D Then BufDev[I]:=$FF;
 End;
 
@@ -2802,7 +2897,10 @@ Begin
  FindName:=False; Pos:=0;
  While UfsReadDir(Dir,Pos,N,I,T) Do
   If N=Name Then Begin Ino:=I; FindName:=True; Exit End;
- { noms DOS (majuscules) : comparaison sans tenir compte de la casse }
+ { programme DOS (executable MZ) : noms en majuscules, comparaison sans
+   tenir compte de la casse; un programme UNIX-0 (COFF) a la semantique
+   UNIX (casse significative) }
+ If Not Procs[Cur].DosProg Then Exit;
  U:=UpStr(Name); Pos:=0;
  While UfsReadDir(Dir,Pos,N,I,T) Do
   If UpStr(N)=U Then Begin Ino:=I; Name:=N; FindName:=True; Exit End;
@@ -3678,6 +3776,7 @@ Function DoWait(Pid: Integer; Options: Word; Var Status: Word): Integer;
 Procedure CheckSignals;
 Procedure CloseAll(P: Integer);
 Procedure SetupKStack(P: Integer);
+Function GetKStack(P: Integer): Boolean;
 
 SegmentImplementation
 
@@ -3688,6 +3787,19 @@ Begin
  For I:=1 To NPROC-1 Do If Procs[I].Stat=PFREE Then Begin
   NewProc:=I; Exit;
  End;
+End;
+
+Function GetKStack(P: Integer): Boolean;
+{ pile noyau de 4 Ko du processus P, allouee a sa creation (en haut de la
+  memoire) et rendue quand son pere recupere son etat (wait) }
+Var K: Word;
+Begin
+ GetKStack:=True;
+ If Procs[P].KStack<>0 Then Exit;
+ K:=CoreAllocHigh(KSTKPARAS);
+ If K=0 Then Begin GetKStack:=False; Exit End;
+ FarFill(K,0,KSTKTOP,$CC);   { motif de detection du debordement }
+ Procs[P].KStack:=K;
 End;
 
 Procedure SetupKStack(P: Integer);
@@ -3748,6 +3860,7 @@ Begin
  C:=NewProc;
  If C<0 Then Begin DoFork:=-EAGAIN; Exit End;
  If Procs[Cur].Size=0 Then Begin DoFork:=-EINVAL; Exit End;
+ If Not GetKStack(C) Then Begin DoFork:=-EAGAIN; Exit End;
  A:=CoreAlloc(Procs[Cur].Size);
  If A=0 Then Begin DoFork:=-ENOMEM; Exit End;
  ParaCopy(Procs[Cur].Home,A,Procs[Cur].Size);
@@ -3758,7 +3871,7 @@ Begin
   Inc(NextPid); If NextPid>30000 Then NextPid:=2;
   While FindPid(NextPid)>=0 Do Inc(NextPid);
   Pid:=NextPid; PPid:=Procs[Cur].Pid;
-  Where:=A; CpuTicks:=0; ChildTicks:=0; SigPend:=0; Chan:=0; Wake:=0;
+  Where:=A; CpuTicks:=0; ChildTicks:=0; CpuRecent:=0; SigPend:=0; Chan:=0; Wake:=0;
   Intr:=False; Alarm:=0;
   USS:=CurUSS; USP:=CurUSP;
   For I:=0 To NOFILE-1 Do If Fd[I]<>0 Then FRef(Fd[I]);
@@ -3789,6 +3902,7 @@ Begin
  C:=NewProc;
  If C<0 Then Begin DoVFork:=-EAGAIN; Exit End;
  If Procs[Cur].Size=0 Then Begin DoVFork:=-EINVAL; Exit End;
+ If Not GetKStack(C) Then Begin DoVFork:=-EAGAIN; Exit End;
  K:=Procs[C].KStack;
  Procs[C]:=Procs[Cur];
  With Procs[C] Do Begin
@@ -3878,6 +3992,7 @@ Var
  Name: TPath;
  E: Integer;
  Lost: Boolean;
+ FMode,FUid,FGid: Word;
 Begin
  { debut de l'environnement dans KArgs }
  I:=0;
@@ -3891,6 +4006,7 @@ Begin
  If VNodes[Vn].Typ<>VREG Then Begin VPut(Vn); DoExec:=EACCES; Exit End;
  E:=VAccess(Vn,1);
  If E<>0 Then Begin VPut(Vn); DoExec:=E; Exit End;
+ FMode:=VNodes[Vn].Mode; FUid:=VNodes[Vn].Uid; FGid:=VNodes[Vn].Gid;
  FillChar(H,SizeOf(H),0);
  If VRead(Vn,0,Seg(H),Ofs(H),32)<20 Then Begin
   VPut(Vn); DoExec:=ENOEXEC; Exit;
@@ -3946,15 +4062,17 @@ Begin
  Extra:=HeapMin;   { .heap du COFF, sinon DEFHEAP }
  Total:=EnvParas+16+LoadParas+MinA+Extra;
  If Total>$A000 Then Begin VPut(Vn); DoExec:=ENOMEM; Exit End;
- Mem_:=CoreAlloc(Total);
+ { comme UNIX V7, l'ancienne image est liberee avant le chargement de la
+   nouvelle (les arguments sont deja dans KArgs, les en-tetes verifies) :
+   la nouvelle image prend la place la plus basse possible, ce qui limite
+   la fragmentation (les images 8086 ne sont pas deplacables). Une erreur
+   d'entree/sortie pendant le chargement termine alors le processus
+   (SIGKILL). L'image d'un fils de vfork appartient a son pere. }
  Lost:=False;
- If (Mem_=0) And Not Procs[Cur].Borrowed And (Procs[Cur].Size<>0) Then Begin
-  { memoire fragmentee : comme UNIX V7, l'ancienne image est liberee avant
-    le chargement (arguments deja copies dans KArgs); un echec ensuite
-    termine le processus (SIGKILL) }
+ If Not Procs[Cur].Borrowed And (Procs[Cur].Size<>0) Then Begin
   ReleaseMemory(Cur); Lost:=True;
-  Mem_:=CoreAlloc(Total);
  End;
+ Mem_:=CoreAlloc(Total);
  If Mem_=0 Then Begin VPut(Vn); If Lost Then DoExit(SIGKILL); DoExec:=ENOMEM; Exit End;
  ParaZero(Mem_,EnvParas+16);
  EnvS:=Mem_; PSP_:=Mem_+EnvParas; Load:=PSP_+16;
@@ -4042,7 +4160,12 @@ Begin
  ReleaseMemory(Cur);
  With Procs[Cur] Do Begin
   Home:=Mem_; Where:=Mem_; Size:=Total; PSP:=PSP_;
-  DosOfs:=0; DosSeg:=0; RawKbd:=False;
+  DosOfs:=0; DosSeg:=0;
+  { bits set-uid et set-gid : utilisateur et groupe effectifs du
+    proprietaire du fichier; programme DOS (MZ) : noms sans casse sur UFS }
+  If FMode And $800<>0 Then Uid:=FUid;
+  If FMode And $400<>0 Then Gid:=FGid;
+  DosProg:=Not Coff;
   { signaux interceptes : remis a SIG_DFL; les signaux ignores le restent }
   For I:=1 To NSIG-1 Do If SigH[I]<>1 Then SigH[I]:=0;
   SigTramp:=0;
@@ -4125,6 +4248,7 @@ Begin
      DoWait:=Procs[I].Pid;
      Inc(Procs[Cur].ChildTicks,Procs[I].CpuTicks+Procs[I].ChildTicks);
      Procs[I].Stat:=PFREE; Procs[I].Pid:=0;
+     CoreFree(Procs[I].KStack,KSTKPARAS); Procs[I].KStack:=0;
      Exit;
     End;
    End;
@@ -4132,6 +4256,37 @@ Begin
   If Options And 1<>0 Then Begin DoWait:=0; Exit End;
   If Not SleepIntr(CHWAIT+Cur) Then Begin DoWait:=-EINTR; Exit End;
  Until False;
+End;
+
+Function DumpCore: Boolean;
+{ image memoire du processus courant ecrite dans le fichier "core" du
+  repertoire courant (comme UNIX V7), si l'utilisateur peut l'ecrire }
+Var D,Vn,E: Integer; Last: TName; Off,Rem: Longint; Sg,Chunk: Word;
+Begin
+ DumpCore:=False;
+ If (Procs[Cur].Size=0) Or Procs[Cur].Borrowed Then Exit;
+ E:=Namei('core',Vn);
+ If E=ENOENT Then Begin
+  E:=NameiParent('core',D,Last);
+  If E=0 Then Begin
+   E:=VAccess(D,3);
+   If E=0 Then E:=VCreate(D,Last,False,$1B6,Vn);
+   VPut(D);
+  End;
+ End Else If E=0 Then Begin
+  If (VNodes[Vn].Typ<>VREG) Or (VAccess(Vn,2)<>0) Then E:=EACCES
+  Else E:=VTrunc(Vn);
+  If E<>0 Then VPut(Vn);
+ End;
+ If E<>0 Then Exit;
+ Off:=0; Sg:=Procs[Cur].Home; Rem:=Longint(Procs[Cur].Size)*16;
+ While Rem>0 Do Begin
+  If Rem>$4000 Then Chunk:=$4000 Else Chunk:=Rem;
+  If VWrite(Vn,Off,Sg,0,Chunk)<>Chunk Then Break;
+  Inc(Off,Chunk); Dec(Rem,Chunk); Inc(Sg,Chunk Div 16);
+ End;
+ VPut(Vn);
+ DumpCore:=Rem=0;
 End;
 
 Procedure CheckSignals;
@@ -4151,6 +4306,10 @@ Begin
    H:=SigH[I];
    If (I=SIGKILL) Or (H=0) Or (SigTramp=0) Or (CurUSP<128) Then Begin
     SigPend:=0;
+    { action par defaut : fin du processus, avec image memoire (core, bit
+      80h de l'etat) pour les signaux d'erreur et SIGQUIT, comme V7 }
+    If (I In [SIGQUIT,SIGILL,SIGTRAP,SIGIOT,SIGEMT,SIGFPE,SIGBUS,SIGSEGV,
+      SIGSYS]) And DumpCore Then DoExit(I Or $80);
     DoExit(I);
    End;
    SigH[I]:=0;
@@ -4405,7 +4564,7 @@ End;
 Function SysPathOp(Op: Integer): Integer;
 { unlink (10), chdir (12), mknod (14), chmod (15), chown (16), utime (30),
   access (33), mkdir (136), rmdir (137) }
-Var E,D,Vn: Integer; Last: TName; P: TPath; T: Longint;
+Var E,D,Vn: Integer; Last: TName; P: TPath; T: Longint; U,G: Word;
 Begin
  P:=UStr(C.RDS,C.RDX);
  Case Op Of
@@ -4444,7 +4603,12 @@ Begin
          End Else Begin T:=MemL[C.RES:C.RDI+4]; E:=Owner(Vn) End;
          If E=0 Then E:=VUtime(Vn,T);
         End;
-    33: If C.RBX And 7<>0 Then E:=VAccess(Vn,C.RBX And 7);
+    33: If C.RBX And 7<>0 Then With Procs[Cur] Do Begin
+         { access : avec l'utilisateur et le groupe reels (comme V7) }
+         U:=Uid; G:=Gid; Uid:=RUid; Gid:=RGid;
+         E:=VAccess(Vn,C.RBX And 7);
+         Uid:=U; Gid:=G;
+        End;
    End;
    VPut(Vn);
   End;
@@ -4718,8 +4882,10 @@ Begin
        If E=0 Then E:=DoMount(UStr(C.RDS,C.RDX),UStr(C.RES,C.RDI),C.RBX);
       End;
   22: If Not Suser Then E:=EPERM Else E:=DoUmount(UStr(C.RDS,C.RDX));
-  23: If Suser Or (C.RBX=Procs[Cur].Uid) Then Procs[Cur].Uid:=C.RBX Else E:=EPERM;
-  24: Begin C.Ret:=Procs[Cur].Uid; C.Ret2:=Procs[Cur].Uid; C.SetDX:=True; C.Two:=True End;
+  23: With Procs[Cur] Do
+       If Suser Or (C.RBX=RUid) Then Begin Uid:=C.RBX; RUid:=C.RBX End
+       Else E:=EPERM;
+  24: Begin C.Ret:=Procs[Cur].RUid; C.Ret2:=Procs[Cur].Uid; C.SetDX:=True; C.Two:=True End;
   25: If Not Suser Then E:=EPERM Else
        BootTime:=(Longint(C.RCX) Shl 16+C.RBX)-(Ticks*10) Div 182;
   27: With Procs[Cur] Do Begin
@@ -4749,7 +4915,7 @@ Begin
        MemW[C.RDS:C.RDX+4]:=Word(((Ticks*10) Mod 182)*1000 Div 182);
        MemW[C.RDS:C.RDX+6]:=0; MemW[C.RDS:C.RDX+8]:=0;
       End;
-  36: C.Ret:=0;
+  36: BSync;
   37: E:=SysKill;
   39: C.Ret:=Procs[Cur].PPid;
   41: If C.RBX And $40<>0 Then E:=SysDup2(C.RBX And $3F,C.RCX)
@@ -4780,11 +4946,14 @@ Begin
        MemL[C.RDS:C.RDX+12]:=0;
        C.Ret:=Hz60(Ticks); C.SetDX:=True;
       End;
-  46: If Suser Or (C.RBX=Procs[Cur].Gid) Then Procs[Cur].Gid:=C.RBX Else E:=EPERM;
-  47: Begin C.Ret:=Procs[Cur].Gid; C.Ret2:=Procs[Cur].Gid; C.SetDX:=True; C.Two:=True End;
+  46: With Procs[Cur] Do
+       If Suser Or (C.RBX=RGid) Then Begin Gid:=C.RBX; RGid:=C.RBX End
+       Else E:=EPERM;
+  47: Begin C.Ret:=Procs[Cur].RGid; C.Ret2:=Procs[Cur].Gid; C.SetDX:=True; C.Two:=True End;
   48: E:=SysSignal;
   54: E:=SysIoctl;
   55: If Not Suser Then E:=EPERM Else Begin
+       BSync;
        KPrintLn('Redemarrage du systeme...');
        Asm
         CLI
@@ -4989,6 +5158,7 @@ Begin
  If E<>0 Then Panic('impossible de lancer /etc/init ou /bin/sh (erreur '+
    IntStr(E)+')');
  KPrintLn('init : '+Path+' (pid 1)');
+ If Not GetKStack(P) Then Panic('pas de memoire pour la pile noyau d''init');
  SetupKStack(P);
  Procs[P].Stat:=PRUN;
  Cur:=0;
@@ -4999,8 +5169,7 @@ Const
 
 Var
  I,E: Integer;
- KStk: Word;
- Root: String;
+ Root,Boot: String;
 
 BEGIN
  { le processus 0 (amorce) s'execute en mode noyau : l'horloge ne doit
@@ -5023,12 +5192,9 @@ BEGIN
    IntStr((Longint(KernelEnd)-$1000) Div 64)+' Ko a 1000:0000, donnees a '+
    HexStr(DSeg)+':0000');
  CoreInit(KernelEnd,MemTop);
- KStk:=CoreAlloc(NPROC*KSTKPARAS);
- If KStk=0 Then Panic('pas de memoire pour les piles noyau');
+ { piles noyau : allouees a la creation de chaque processus (GetKStack) }
  For I:=0 To NPROC-1 Do Begin
-  FarFill(KStk+I*KSTKPARAS,0,KSTKTOP,$CC);   { motif de detection }
   FillChar(Procs[I],SizeOf(TProc),0);
-  Procs[I].KStack:=KStk+I*KSTKPARAS;
   Procs[I].Cwd:='/';
  End;
  { processus 0 : contexte d'amorce, ne redevient jamais pret }
@@ -5043,7 +5209,7 @@ BEGIN
  { vecteurs d'interruption }
  SysHook:=@SysDispatch; PreemptHook:=@PreemptEntry; FaultHook:=@FaultEntry;
  KSysInit; TtyInit;
- IdleHook:=@TtyPoll;
+ IdleHook:=@TtyPoll; SyncHook:=@BSync;
  OldInt08:=GetVector($08); OldInt1B:=GetVector($1B);
  SetVector($80,Seg(Int80Stub),Ofs(Int80Stub));
  SetVector($00,Seg(Int00Stub),Ofs(Int00Stub));
@@ -5051,21 +5217,34 @@ BEGIN
  SetVector($21,Seg(NoDosStub),Ofs(NoDosStub));
  SetVector($08,Seg(Int08Stub),Ofs(Int08Stub));
  { systemes de fichiers }
- Root:=RootDevice;
- If Root='' Then Panic('unite d''amorce inconnue');
- E:=DoMount(Root,'/',0);
+ { racine : comme un UNIX, la partition UFS (FreeBSD, type A5h) du disque
+   d'amorce s'il y en a une; l'unite d'amorce FAT, qui contient le noyau,
+   est alors montee sur /boot. Sinon (disquettes), la racine est l'unite
+   d'amorce FAT, et une partition UFS est montee sur /usr. }
+ Boot:=RootDevice;
+ If Boot='' Then Panic('unite d''amorce inconnue');
+ Root:='';
+ For I:=0 To DiskCount-1 Do
+  If (Root='') And (Disks[I].Bios=BootDrive) And (Disks[I].PartType In [$A5,$A6,$A9]) Then
+   Root:=Disks[I].Name;
+ E:=1;
+ If Root<>'' Then E:=DoMount(Root,'/',2);
+ If E<>0 Then Begin Root:=Boot; E:=DoMount(Root,'/',0) End;
  If E<>0 Then Panic('montage de la racine impossible ('+IntStr(E)+')');
  KPrintLn('racine : /dev/'+Root+' ('+
    Copy('FAT12FAT16UFS  ',(Mounts[1].Typ-1)*5+1,5)+')');
  E:=DoMount('devfs','/dev',0);
- { partitions UFS (FreeBSD, type A5h) montees sur /usr }
- For I:=0 To DiskCount-1 Do
-  If Disks[I].PartType In [$A5,$A6,$A9] Then
-   If Not IsMountDir('/usr') Then Begin
-    E:=DoMount(Disks[I].Name,'/usr',2);
-    If E=0 Then KPrintLn('/usr : /dev/'+Disks[I].Name+' (UFS)')
-    Else KPrintLn('/dev/'+Disks[I].Name+' : pas de systeme UFS ('+IntStr(E)+')');
-   End;
+ If Root<>Boot Then Begin
+  E:=DoMount(Boot,'/boot',1);
+  If E=0 Then KPrintLn('/boot : /dev/'+Boot+' (noyau)');
+ End Else
+  For I:=0 To DiskCount-1 Do
+   If Disks[I].PartType In [$A5,$A6,$A9] Then
+    If Not IsMountDir('/usr') Then Begin
+     E:=DoMount(Disks[I].Name,'/usr',2);
+     If E=0 Then KPrintLn('/usr : /dev/'+Disks[I].Name+' (UFS)')
+     Else KPrintLn('/dev/'+Disks[I].Name+' : pas de systeme UFS ('+IntStr(E)+')');
+    End;
  StartInit;
  SchedOn:=True;
  Swtch;

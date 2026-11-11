@@ -3,8 +3,9 @@
 # @created: 2026
 # @website(https://www.gladir.com/unix-0)
 # @description: Tests du noyau UNIX-0 sous QEMU (apres KERNEL16/BUILD.SH) :
-#   chaque programme de test est installe comme /etc/init sur une copie du
-#   disque dur, la console serie (COM1) est recueillie, puis les systemes de
+#   chaque programme de test est installe comme /etc/init sur une copie de
+#   la racine UFS du disque dur, la console serie (COM1) est recueillie, puis
+#   les systemes de
 #   fichiers sont verifies : UFS1 par TOOLS/UFSCHK.PY, FAT16 par fsck.vfat
 #   (paquet dosfstools), s'il est present; enfin TESTS/SESSION.PY ouvre une
 #   session complete (getty, login, sh) par la console serie.
@@ -18,9 +19,12 @@ fail=0
 for t in TPROC TFS; do
   cp "$HERE/$t.PAS" "$T/"
   ( cd "$T" && "$W/bin/upc" /X $t.PAS > $t.log ) || { echo "ECHEC compilation $t"; fail=1; continue; }
-  rm -rf "$T/root"; cp -r "$W/hd" "$T/root"; cp "$T/$t" "$T/root/etc/init"
+  # le programme de test devient /etc/init de la racine UFS
+  rm -rf "$T/root"; cp -a "$W/ufsroot" "$T/root"; cp "$T/$t" "$T/root/etc/init"
+  chmod 755 "$T/root/etc/init"
+  ${MAKEFS:-makefs} -t ffs -o version=1 -s 16m -f 1024 "$T/ufs.img" "$T/root" > /dev/null
   "$W/bin/mkimage" HD "$T/$t.img" "$ROOT/KERNEL16/MBR.BIN" "$ROOT/KERNEL16/BOOTSECT.BIN" \
-    "$T/root" 24 "$W/ufs.img" > /dev/null
+    "$W/hdboot" 16 "$T/ufs.img" > /dev/null
   rm -f "$T/$t.out"
   timeout 90 qemu-system-i386 -m 1 -display none -no-reboot -boot c \
     -drive file="$T/$t.img",format=raw,if=ide -serial file:"$T/$t.out" 2>/dev/null &

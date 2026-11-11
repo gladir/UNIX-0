@@ -175,6 +175,7 @@ Function WaitPid(Pid: Integer; Var Status: Integer; Options: Word): Integer;
 Function WIfExited(Status: Integer): Boolean;
 Function WExitStatus(Status: Integer): Integer;
 Function WTermSig(Status: Integer): Integer;
+Function WCoreDump(Status: Integer): Boolean;
 Function SysCreat(Path: String; Mode: Word): Integer;
 Function SysLink(OldPath, NewPath: String): Integer;
 Function SysUnlink(Path: String): Integer;
@@ -200,6 +201,8 @@ Function GetPid: Integer;
 Function GetPPid: Integer;
 Function GetUid: Integer;
 Function GetGid: Integer;
+Function GetEUid: Integer;
+Function GetEGid: Integer;
 Function SetUid(Uid: Integer): Integer;
 Function SetGid(Gid: Integer): Integer;
 Function SysMount(Special, Dir: String; FsType: Word): Integer;
@@ -431,6 +434,12 @@ Begin
  WTermSig:=Status And $7F;
 End;
 
+Function WCoreDump(Status: Integer): Boolean;
+{ le processus termine par un signal a laisse un fichier core }
+Begin
+ WCoreDump:=Status And $80<>0;
+End;
+
 Function SysCreat(Path: String; Mode: Word): Integer;
 Begin
  SetRegs(SYS_creat,0,Mode,0); SetPath(Path); SysCreat:=Result16;
@@ -630,6 +639,7 @@ Begin
 End;
 
 Function GetUid: Integer;
+{ utilisateur reel (getuid rend aussi l'effectif dans DX, comme V7) }
 Begin
  SetRegs(SYS_getuid,0,0,0); GetUid:=Result16;
 End;
@@ -637,6 +647,17 @@ End;
 Function GetGid: Integer;
 Begin
  SetRegs(SYS_getgid,0,0,0); GetGid:=Result16;
+End;
+
+Function GetEUid: Integer;
+{ utilisateur effectif (bit set-uid) }
+Begin
+ SetRegs(SYS_getuid,0,0,0); DoSys; GetEUid:=SDX;
+End;
+
+Function GetEGid: Integer;
+Begin
+ SetRegs(SYS_getgid,0,0,0); DoSys; GetEGid:=SDX;
 End;
 
 Function SetUid(Uid: Integer): Integer;

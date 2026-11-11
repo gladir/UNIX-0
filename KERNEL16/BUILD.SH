@@ -17,9 +17,10 @@
 #  5. fabrique les images :
 #       IMAGES/UNIX0-144.IMG  disquette 1,44 Mo FAT12 (commandes essentielles)
 #       IMAGES/UNIX0-288.IMG  disquette 2,88 Mo FAT12 (commandes, sauf bash/csh/ksh)
-#       IMAGES/UNIX0-HD.IMG   disque dur : partition 1 FAT16 amorcable (racine)
-#                             et partition 2 UFS1 (FreeBSD) montee sur /usr
-#                             (makefs -t ffs, s'il est present).
+#       IMAGES/UNIX0-HD.IMG   disque dur : partition 1 FAT16 amorcable (le
+#                             noyau, monte sur /boot) et partition 2 UFS1
+#                             (FreeBSD), racine du systeme (makefs -t ffs;
+#                             sans makefs, racine FAT16).
 #
 #  Usage : KERNEL16/BUILD.SH            (depuis n'importe quel repertoire)
 #  Variables : FPC (defaut fpc), NASM (defaut nasm), MAKEFS (defaut makefs),
@@ -126,16 +127,34 @@ echo "== Disquette 2,88 Mo"
 # sans les interpreteurs de style DOS BASH, CSH et KSH (sur le disque dur)
 mkroot "$W/fd288" $(echo $ALL | tr ' ' '\n' | grep -v -x -e BASH -e CSH -e KSH)
 "$W/bin/mkimage" FLOPPY "$ROOT/IMAGES/UNIX0-288.IMG" "$HERE/BOOTSECT.BIN" "$W/fd288" 2880
-echo "== Disque dur (FAT16 + UFS)"
+echo "== Disque dur (FAT16 d'amorce + racine UFS)"
 mkroot "$W/hd" $ALL
-UFSIMG=""
+# modes et proprietaires de la racine UFS (permissions verifiees par le
+# noyau) : executables 0755, passwd set-uid root (comme V7), /tmp 0777,
+# repertoire de connexion de invite a l'utilisateur 100
+setperms() {
+  local d=$1
+  chown -R 0:0 "$d"
+  find "$d" -type d -exec chmod 755 {} +
+  find "$d" -type f -exec chmod 644 {} +
+  chmod 755 "$d"/bin/* "$d/etc/init" "$d/etc/getty"
+  chmod 4755 "$d/bin/passwd"
+  chmod 777 "$d/tmp" "$d/usr/tmp"
+  chown -R 100:100 "$d/home/invite"
+}
 if command -v "$MAKEFS" >/dev/null; then
-  rm -rf "$W/ufs"; mkdir -p "$W/ufs/src" "$W/ufs/doc" "$W/ufs/tmp"
-  cp "$ROOT"/*.PAS "$HERE/KERNEL.PAS" "$HERE/INIT.PAS" "$W/ufs/src/"
-  cp "$ROOT/README.md" "$W/ufs/doc/" 2>/dev/null || true
-  printf 'Ce systeme de fichiers est un UFS1 (FreeBSD) monte sur /usr.\n' > "$W/ufs/LISEZMOI"
-  $MAKEFS -t ffs -o version=1 -s 8m -f 1024 "$W/ufs.img" "$W/ufs" > "$W/log/makefs.log"
-  UFSIMG="$W/ufs.img"
+  # racine : partition UFS1 (FreeBSD) avec toute l'arborescence; la
+  # partition FAT16 d'amorce ne contient que le noyau (montee sur /boot)
+  rm -rf "$W/ufsroot"; cp -a "$W/hd" "$W/ufsroot"; rm -f "$W/ufsroot/UNIX"
+  mkdir -p "$W/ufsroot/boot" "$W/ufsroot/usr/src" "$W/ufsroot/usr/doc" "$W/ufsroot/usr/tmp"
+  cp "$ROOT"/*.PAS "$HERE/KERNEL.PAS" "$HERE/INIT.PAS" "$HERE"/USR/*.PAS "$W/ufsroot/usr/src/"
+  cp "$ROOT/README.md" "$HERE/LISEZMOI.md" "$W/ufsroot/usr/doc/" 2>/dev/null || true
+  setperms "$W/ufsroot"
+  $MAKEFS -t ffs -o version=1 -s 16m -f 1024 "$W/ufs.img" "$W/ufsroot" > "$W/log/makefs.log"
+  rm -rf "$W/hdboot"; mkdir -p "$W/hdboot"; cp "$W/src/KERNEL.SYS" "$W/hdboot/UNIX"
+  "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hdboot" 16 "$W/ufs.img"
+else
+  echo "   (makefs absent : racine FAT16, sans partition UFS)"
+  "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hd" 24
 fi
-"$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hd" 24 $UFSIMG
 ls -l "$ROOT/IMAGES"

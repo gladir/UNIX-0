@@ -2,9 +2,10 @@
   @created: 2026
   @website(https://www.gladir.com/unix-0)
   @abstract(Target: Unix Pascal (UPC /X))
-  @description: Test des systemes de fichiers de UNIX-0 sur /usr (UFS1) et
-   /tmp (FAT16) : creation, gros fichier (blocs indirects), relecture,
-   suppression, renommage, repertoires, troncature.
+  @description: Test des systemes de fichiers de UNIX-0 sur /usr (racine
+   UFS1) et /boot (FAT16) : creation, gros fichier (blocs indirects),
+   relecture, suppression, renommage, repertoires, troncature; liens
+   physiques et casse significative (UFS), fichier core.
    Lance comme /etc/init par TESTS/RUNTESTS.SH; affiche TERMINE a la fin.
 }
 
@@ -43,7 +44,22 @@ Begin
 End;
 Begin
  Stress('/usr');
- Stress('/tmp');
+ WriteLn('== UFS : liens, casse, core');
+ Chk('link',SysLink('/usr/d/un.dat','/usr/d/lien'));
+ Chk('stat lien',SysStat('/usr/d/lien',St));
+ If St.NLink<>2 Then WriteLn('ECHEC nlink ',St.NLink) Else WriteLn('ok lien physique (nlink 2)');
+ If SysStat('/usr/d/UN.DAT',St)=0 Then WriteLn('ECHEC casse ignoree')
+ Else WriteLn('ok casse significative');
+ SysChdir('/usr');
+ I:=Fork;
+ If I=0 Then Begin SysKill(GetPid,SIGQUIT); SysExit(0) End;
+ WaitPid(I,J,0);
+ If (WTermSig(J)=SIGQUIT)And(J And $80<>0)And(SysStat('/usr/core',St)=0)And(St.Size>1000) Then
+  WriteLn('ok core (',St.Size,' octets)')
+ Else WriteLn('ECHEC core etat ',J);
+ SysUnlink('/usr/core');
+ Stress('/boot');
+ SysSync;
  WriteLn('TERMINE');
  Repeat SysSleep(100) Until False;
 End.

@@ -593,6 +593,7 @@ Var M:String;
 Begin
  If WTermSig(St)<>0 Then Begin
   M:=SigName(WTermSig(St));
+  If WCoreDump(St) Then M:=M+' (core)';
   If M<>'' Then Begin
    If Bg Then Err(IStr(Pid)+': '+M) Else Err(M);
   End;
@@ -867,7 +868,7 @@ End;
 Function Prompt:String;
 Begin
  If FindVar('PS1')>0 Then Prompt:=GetVar('PS1')
- Else If GetUid=0 Then Prompt:='# ' Else Prompt:='$ ';
+ Else If GetEUid=0 Then Prompt:='# ' Else Prompt:='$ ';
 End;
 
 Var

@@ -11,7 +11,7 @@
 Program PS;
 
 Var
- P:TProcInfo; I:Integer; S:Char; T:Longint;
+ P:TProcInfo; I:Integer; S:Char; T:Longint; M:TMemInfo;
 
 Function Pad(L:Longint;W:Integer):String;
 Var S:String;
@@ -20,6 +20,9 @@ Begin
 End;
 
 BEGIN
+ If SysMemInfo(M)>=0 Then
+  WriteLn('memoire : ',Longint(M.TotalParas)*16 Div 1024,' Ko, libre ',
+    Longint(M.FreeParas)*16 Div 1024,' Ko, ',M.ProcCount,' processus sur ',M.ProcMax);
  WriteLn('  PID  PPID   UID S   MEM   TIME COMMAND');
  For I:=1 To 63 Do
   If SysProcInfo(I,P) Then Begin

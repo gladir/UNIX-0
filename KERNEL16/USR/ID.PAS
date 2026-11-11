@@ -34,5 +34,11 @@ BEGIN
  U:=GetUid; G:=GetGid;
  Write('uid=',U);
  If UserName(U)<>'' Then Write('(',UserName(U),')');
- WriteLn(' gid=',G);
+ Write(' gid=',G);
+ If GetEUid<>U Then Begin
+  Write(' euid=',GetEUid);
+  If UserName(GetEUid)<>'' Then Write('(',UserName(GetEUid),')');
+ End;
+ If GetEGid<>G Then Write(' egid=',GetEGid);
+ WriteLn;
 END.

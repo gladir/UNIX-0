@@ -242,7 +242,7 @@ Pour compiler un programme pour le système d'exploitation UNIX-0 lui-même (app
 
 <h2>Système d'exploitation UNIX-0 (KERNEL16)</h2>
 
-Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/8088, mode réel), écrit dans un seul fichier Pascal (<b>KERNEL16/KERNEL.PAS</b>) et compilé en une seule image monolithique de plus de 64 Ko : appels système INT 80h (fork, vfork, execve, waitpid, read, write, open, pipe, kill, mount, ...), ordonnanceur préemptif, gestion de la mémoire par table des zones libres, systèmes de fichiers FAT12, FAT16 et UFS1 (FreeBSD), /dev, tubes et console. Voir <a href="KERNEL16/LISEZMOI.md">KERNEL16/LISEZMOI.md</a>.
+Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/8088, mode réel), écrit dans un seul fichier Pascal (<b>KERNEL16/KERNEL.PAS</b>) et compilé en une seule image monolithique de plus de 64 Ko. Son interface suit celle de UNIX V7 : appels système INT 80h avec les numéros et la sémantique de V7 (fork, exec avec argc/argv sur la pile, wait, signal avec gestionnaires, alarm, stat, ioctl sgttyb, setuid, ...), utilisateurs et permissions, ordonnanceur préemptif à priorités, gestion de la mémoire par table des zones libres, systèmes de fichiers UFS1 (FreeBSD, racine du disque dur), FAT12 et FAT16, /dev, tubes, cache à écriture différée et console. Une session complète s'y ouvre : init, getty, login (/etc/passwd) et un shell UNIX (PATH, redirections, tubes, arrière-plan). Voir <a href="KERNEL16/LISEZMOI.md">KERNEL16/LISEZMOI.md</a>.
 
 <table>
 		<tr>
@@ -255,7 +255,11 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 		</tr>
 		<tr>
 			<td><b>KERNEL16/INIT.PAS</b></td>
-			<td>Le processus init (/etc/init) qui lance l'interpréteur de commandes.</td>
+			<td>Le processus init (/etc/init) : lit /etc/ttys et lance getty sur chaque terminal.</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/USR</b></td>
+			<td>Les programmes système : sh (shell UNIX), getty, login, passwd, ps, kill, id, mkdir, rmdir, rm.</td>
 		</tr>
 		<tr>
 			<td><b>KERNEL16/BOOTSECT.ASM</b></td>
@@ -271,7 +275,7 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 		</tr>
 		<tr>
 			<td><b>KERNEL16/TESTS</b></td>
-			<td>Tests du noyau sous QEMU (processus, ordonnanceur, tubes, systèmes de fichiers).</td>
+			<td>Tests sous QEMU (processus, signaux, permissions, systèmes de fichiers, session complète getty/login/sh) et dans DEVENV.</td>
 		</tr>
 		<tr>
 			<td><b>TOOLS/UPC.PAS</b></td>
@@ -295,7 +299,7 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 		</tr>
 		<tr>
 			<td><b>IMAGES</b></td>
-			<td>Images de disque amorçables : disquettes de 1,44 Mo et 2,88 Mo, disque dur de 32 Mo (voir IMAGES/LISEZMOI.TXT).</td>
+			<td>Images de disque amorçables : disquettes de 1,44 Mo et 2,88 Mo, disque dur de 32 Mo à racine UFS (voir IMAGES/LISEZMOI.TXT). Connexion : root (sans mot de passe) ou invite (mot de passe invite).</td>
 		</tr>
 </table>
 
