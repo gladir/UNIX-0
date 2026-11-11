@@ -21,7 +21,9 @@ for t in TPROC TFS TSWAP; do
   cp "$HERE/$t.PAS" "$T/"
   ( cd "$T" && "$W/bin/upc" /X $t.PAS > $t.log ) || { echo "ECHEC compilation $t"; fail=1; continue; }
   # le programme de test devient /etc/init de la racine UFS
+  # (disposition FAT16 d'amorce + racine UFS : TFS ecrit aussi sur /boot)
   rm -rf "$T/root"; cp -a "$W/ufsroot" "$T/root"; cp "$T/$t" "$T/root/etc/init"
+  mkdir -p "$T/root/boot"
   chmod 755 "$T/root/etc/init"
   ${MAKEFS:-makefs} -t ffs -o version=1 -s 16m -f 1024 "$T/ufs.img" "$T/root" > /dev/null
   "$W/bin/mkimage" HD "$T/$t.img" "$ROOT/KERNEL16/MBR.BIN" "$ROOT/KERNEL16/BOOTSECT.BIN" \

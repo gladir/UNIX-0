@@ -266,6 +266,10 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 			<td>Le secteur d'amorce FAT12/FAT16 qui charge le noyau.</td>
 		</tr>
 		<tr>
+			<td><b>KERNEL16/UFSBOOT.ASM</b></td>
+			<td>L'amorce UFS1 (8 Ko dans la zone d'amorce de la partition UFS) qui charge le noyau /unix.</td>
+		</tr>
+		<tr>
 			<td><b>KERNEL16/MBR.ASM</b></td>
 			<td>Le secteur de partition du disque dur.</td>
 		</tr>
@@ -307,7 +311,7 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 		</tr>
 		<tr>
 			<td><b>IMAGES</b></td>
-			<td>Images de disque amorçables : disquettes de 1,44 Mo et 2,88 Mo, disque dur de 36 Mo à racine UFS et zone de va-et-vient (voir IMAGES/LISEZMOI.TXT). Connexion : root (sans mot de passe) ou invite (mot de passe invite). Distribution : 4 disquettes d'installation (UNIX0-INST1.IMG à UNIX0-INST4.IMG) et un CD-ROM (UNIX0-CD.ISO) ; l'installateur (KERNEL16/USR/INSTALL.PAS) installe UNIX-0 sur un disque dur.</td>
+			<td>Images de disque amorçables : disquettes de 1,44 Mo et 2,88 Mo, disque dur de 20 Mo amorcé directement sur UFS (noyau /unix), avec zone de va-et-vient (voir IMAGES/LISEZMOI.TXT). Connexion : root (sans mot de passe) ou invite (mot de passe invite). Distribution : 4 disquettes d'installation (UNIX0-INST1.IMG à UNIX0-INST4.IMG) et un CD-ROM (UNIX0-CD.ISO) ; l'installateur (KERNEL16/USR/INSTALL.PAS) installe UNIX-0 sur un disque dur.</td>
 		</tr>
 </table>
 

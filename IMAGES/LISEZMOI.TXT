@@ -6,12 +6,12 @@ UNIX0-144.IMG  disquette 1,44 Mo FAT12 : noyau /UNIX, /etc/init, getty,
                (sh, ls, cat, cp, mv, rm, mkdir, grep, ps, kill, passwd, ...).
 UNIX0-288.IMG  disquette 2,88 Mo FAT12 : les commandes du depot UNIX-0
                (sauf les interpreteurs de style DOS bash, csh et ksh).
-UNIX0-HD.IMG   disque dur de 36 Mo (16 tetes, 63 secteurs par piste) :
-               partition 1 FAT16 active (le noyau, montee sur /boot) et
-               partition 2 de type A5h contenant un systeme de fichiers UFS1
-               (FreeBSD) : la racine, avec toutes les commandes et les
-               sources du projet dans /usr/src; partition 3 de type 82h
-               (4 Mo) : la zone de va-et-vient (swap) du noyau.
+UNIX0-HD.IMG   disque dur de 20 Mo (16 tetes, 63 secteurs par piste) amorce
+               directement sur UFS : partition 1 active de type A5h, un
+               systeme de fichiers UFS1 (FreeBSD) avec l'amorce UFS dans
+               ses 8 premiers Ko, le noyau /unix, toutes les commandes et
+               les sources dans /usr/src; partition 2 de type 82h (4 Mo) :
+               la zone de va-et-vient (swap) du noyau.
 
 Distribution (installation sur un disque dur, programme /bin/install) :
 
@@ -28,10 +28,12 @@ UNIX0-CD.ISO     CD-ROM ISO 9660 amorcable (El Torito, emulation de disque
                  dur) : la disquette 1 et les volumes dans /dist.
 
 Pour installer : demarrer sur la disquette 1 (ou le CD-ROM), se connecter
-sous le nom "install", choisir le disque, confirmer, puis inserer les
-disquettes 2, 3 et 4 a la demande. L'installateur cree trois partitions
-(FAT16 d'amorce de 4 Mo avec le noyau, racine UFS1, va-et-vient de 4 Mo),
-les systemes de fichiers, puis copie tout. Le disque doit faire au moins
+sous le nom "install", choisir le disque et le type d'installation :
+  1) UFS seul (par defaut) : racine UFS1 amorcee directement (noyau /unix)
+  2) FAT16 d'amorce (4 Mo, noyau) + racine UFS1
+  3) FAT16 seul (sans permissions UNIX)
+confirmer, puis inserer les disquettes 2, 3 et 4 a la demande. Une zone
+de va-et-vient de 4 Mo est toujours creee. Le disque doit faire au moins
 16 Mo; seuls les 1024 premiers cylindres du BIOS sont utilises (504 Mo).
 Avec le CD-ROM, le BIOS presente le CD comme premier disque dur (hda) :
 l'installation se fait sur hdb, qui demarrera ensuite comme 80h.
@@ -45,6 +47,14 @@ l'installation se fait sur hdb, qui demarrera ensuite comme 80h.
 Un disque vierge se cree par exemple avec : truncate -s 64M disque.img
 Sur un vrai PC : dd if=UNIX0-INSTn.IMG of=/dev/fd0 pour chaque disquette,
 ou graver UNIX0-CD.ISO.
+
+Dans DEVENV (devenv -maxscreen), Invite de commandes :
+  IMGMOUNT A: UNIX0-INST1.IMG
+  IMGMOUNT C: disque.img
+  BOOT A:
+puis a chaque disquette demandee : IMGMOUNT -u A, IMGMOUNT A: UNIX0-INST2.IMG
+(puis 3, 4), et Entree dans l'onglet emulateur. Depuis le CD-ROM :
+BOOT /CDROM:UNIX0-CD.ISO puis IMGMOUNT D: disque.img.
 
 Demarrage sous QEMU (images toutes faites) :
 

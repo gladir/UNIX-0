@@ -4,8 +4,10 @@
 # @website(https://www.gladir.com/unix-0)
 # @description: Essai de l'installation de UNIX-0 sous QEMU, de bout en bout :
 #   1. depuis les disquettes (UNIX0-INST1.IMG, puis 2, 3, ... inserees par le
-#      moniteur de QEMU a la demande de l'installateur) sur un disque vierge;
-#   2. depuis le CD-ROM (UNIX0-CD.ISO, El Torito) sur un autre disque vierge.
+#      moniteur de QEMU a la demande de l'installateur) sur un disque vierge,
+#      installation par defaut (UFS seul, amorce UFS);
+#   2. depuis le CD-ROM (UNIX0-CD.ISO, El Torito) : FAT16 d'amorce + UFS,
+#      puis FAT16 seul, sur d'autres disques vierges.
 #   Chaque disque installe est verifie (UFS1 par TOOLS/UFSCHK.PY, FAT16 par
 #   fsck.vfat s'il est present), puis demarre seul : connexion de root et
 #   quelques commandes.
@@ -83,31 +85,34 @@ class Vm:
 
 
 def check_disk(path, what):
-    r = subprocess.run([sys.executable, os.path.join(ROOT, 'TOOLS', 'UFSCHK.PY'),
-                        '--hd', path], capture_output=True, text=True)
-    ok(r.returncode == 0, '%s : UFS1 coherent (%s)' % (what, r.stdout.strip().splitlines()[-1]))
-    if shutil.which('fsck.vfat'):
-        d = open(path, 'rb').read(512)
-        start, size = struct.unpack_from('<II', d, 454)
-        fat = os.path.join(TMP, 'fat.img')
-        with open(path, 'rb') as f, open(fat, 'wb') as g:
-            f.seek(start * 512)
-            g.write(f.read(size * 512))
-        r = subprocess.run(['fsck.vfat', '-n', fat], capture_output=True, text=True)
-        ok(r.returncode == 0, '%s : FAT16 d\'amorce sans erreur (fsck.vfat)' % what)
-        if r.returncode:
-            print('      | ' + (r.stdout + r.stderr).strip().replace('\n', '\n      | '))
+    d = open(path, 'rb').read(512)
+    for i in range(4):
+        typ = d[446 + 16 * i + 4]
+        start, size = struct.unpack_from('<II', d, 446 + 16 * i + 8)
+        if typ == 0xA5:
+            r = subprocess.run([sys.executable, os.path.join(ROOT, 'TOOLS', 'UFSCHK.PY'),
+                                path, str(start)], capture_output=True, text=True)
+            ok(r.returncode == 0, '%s : UFS1 coherent (%s)' % (what, r.stdout.strip().splitlines()[-1]))
+        elif typ in (4, 6) and shutil.which('fsck.vfat'):
+            fat = os.path.join(TMP, 'fat.img')
+            with open(path, 'rb') as f, open(fat, 'wb') as g:
+                f.seek(start * 512)
+                g.write(f.read(size * 512))
+            r = subprocess.run(['fsck.vfat', '-n', fat], capture_output=True, text=True)
+            ok(r.returncode == 0, '%s : FAT16 sans erreur (fsck.vfat)' % what)
+            if r.returncode:
+                print('      | ' + (r.stdout + r.stderr).strip().replace('\n', '\n      | '))
 
 
-def boot_installed(path, what):
+def boot_installed(path, what, expect):
     vm = Vm(['-drive', 'file=%s,format=raw,if=ide' % path, '-boot', 'c'])
     try:
         boot = vm.expect(r'login: ', 120)
-        ok('racine : /dev/hda2 (UFS' in boot and 'va-et-vient : /dev/hda3' in boot,
-           '%s : demarrage du disque dur (racine UFS, va-et-vient)' % what)
+        ok(all(e in boot for e in expect),
+           '%s : demarrage du disque dur (%s)' % (what, ', '.join(expect)))
         vm.send('root')
         vm.expect(r'# $', 30)
-        vm.send('ls /bin | wc -l; cat /etc/passwd | grep invite; ls -l /bin/passwd; ls /boot; id')
+        vm.send('ls /bin | wc -l; cat /etc/passwd | grep invite; ls -l /bin/passwd; ls /; id')
         r = vm.expect(r'(?m)^# $', 60).replace('\r', '')
         n = re.search(r'^(\d+)$', r, re.M)
         ok(n is not None and int(n.group(1)) >= 50 and 'invite:' in r and 'unix' in r
@@ -137,6 +142,8 @@ def install_floppy():
         vm.expect(r'"install"', 120)
         vm.expect(r'login: ', 30)
         vm.send('install')
+        vm.expect(r'Choix \[1\] : ', 60)
+        vm.send('')                       # installation par defaut : UFS seul
         vm.expect(r'Continuer \? \(oui/non\) ', 60)
         vm.send('oui')
         changes = 0
@@ -164,33 +171,36 @@ def install_floppy():
     finally:
         vm.close()
     check_disk(target, 'disquettes')
-    boot_installed(target, 'disquettes')
+    boot_installed(target, 'disquettes', ['racine : /dev/hda1 (UFS',
+                                          'va-et-vient : /dev/hda2'])
 
 
-def install_cd():
-    target = os.path.join(TMP, 'disque2.img')
+def install_cd(layout, size, expect, what):
+    target = os.path.join(TMP, 'disque%d.img' % (layout + 1))
     with open(target, 'wb') as f:
-        f.truncate(48 * 1024 * 1024)
+        f.truncate(size * 1024 * 1024)
     vm = Vm(['-cdrom', os.path.join(IMG, 'UNIX0-CD.ISO'),
              '-drive', 'file=%s,format=raw,if=ide,index=0' % target, '-boot', 'd'])
     try:
         vm.expect(r'"install"', 120)
         vm.expect(r'login: ', 30)
         vm.send('install')
-        t = vm.expect(r'Continuer \? \(oui/non\) ', 60)
-        ok('/dev/hdb' in t and 'CD-ROM' in t, 'CD-ROM : disque cible /dev/hdb (le CD est hda)')
+        t = vm.expect(r'Choix \[1\] : ', 60)
+        ok('/dev/hdb' in t and 'CD-ROM' in t, '%s : disque cible /dev/hdb (le CD est hda)' % what)
+        vm.send(str(layout))
+        vm.expect(r'Continuer \? \(oui/non\) ', 60)
         vm.send('oui')
-        vm.expect(r'Redemarrer maintenant \? \(oui/non\) ', 600)
-        ok('Installation terminee' in vm.log, 'installation terminee depuis le CD-ROM')
+        vm.expect(r'Redemarrer maintenant \? \(oui/non\) ', 900)
+        ok('Installation terminee' in vm.log, '%s : installation terminee' % what)
         vm.send('non')
         vm.expect(r'login: ', 60)
     except TimeoutError as e:
-        ok(False, 'installation depuis le CD-ROM : %s' % e)
+        ok(False, '%s : %s' % (what, e))
         print(vm.log[-1500:])
     finally:
         vm.close()
-    check_disk(target, 'CD-ROM')
-    boot_installed(target, 'CD-ROM')
+    check_disk(target, what)
+    boot_installed(target, what, expect)
 
 
 MODE = os.environ.get('INSTALL_MODE', 'disquettes cd')
@@ -198,8 +208,12 @@ if 'disquettes' in MODE:
     print('== Installation depuis les disquettes')
     install_floppy()
 if 'cd' in MODE:
-    print('== Installation depuis le CD-ROM')
-    install_cd()
+    print('== Installation depuis le CD-ROM : FAT16 d\'amorce + UFS')
+    install_cd(2, 48, ['racine : /dev/hda2 (UFS', '/boot : /dev/hda1', 'va-et-vient : /dev/hda3'],
+               'CD-ROM, FAT16 + UFS')
+    print('== Installation depuis le CD-ROM : FAT16 seul')
+    install_cd(3, 48, ['racine : /dev/hda1 (FAT16', 'va-et-vient : /dev/hda2'],
+               'CD-ROM, FAT16 seul')
 shutil.rmtree(TMP)
 print('Installation : %d echec(s)' % fails)
 sys.exit(1 if fails else 0)

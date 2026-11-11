@@ -19,6 +19,7 @@ de code répartis en segments, 31 Ko de données). Son interface suit celle de
 | `USR/PS.PAS`, `USR/KILL.PAS`, `USR/ID.PAS` | processus, signaux, identité |
 | `USR/MKDIR.PAS`, `USR/RMDIR.PAS`, `USR/RM.PAS` | répertoires et suppression |
 | `USR/INSTALL.PAS` | `/bin/install`, l'installation sur un disque dur depuis les disquettes ou le CD-ROM |
+| `UFSBOOT.ASM` / `.BIN` | amorce UFS1 (8 Ko, dans la zone d'amorce de la partition UFS) : charge `/unix` à 1000:0000 |
 | `BOOTSECT.ASM` / `.BIN` | secteur d'amorce FAT12/FAT16 : charge le fichier `UNIX` à 1000:0000 |
 | `MBR.ASM` / `.BIN` | secteur de partition du disque dur |
 | `BUILD.SH` | construit le compilateur, le noyau, toutes les commandes et les images de `IMAGES/` |
@@ -47,11 +48,12 @@ vérifie les systèmes de fichiers (`TOOLS/UFSCHK.PY`, `fsck.vfat`), puis
 `passwd`, connexion de root.
 
 Dans l'IDE **DEVENV** (dépôt DEV-COOLS), UNIX-0 s'exécute dans un onglet
-« Émulateur 8086 » : lancer `devenv /DISK0:IMAGES/UNIX0-144.IMG` puis taper
-`BOOT A:` dans le terminal CMD de l'IDE (ou `devenv /DISK80:IMAGES/UNIX0-HD.IMG`
+« Émulateur 8086 » : dans l'Invite de commandes de l'IDE, `IMGMOUNT A:
+IMAGES/UNIX0-144.IMG` puis `BOOT A:` (ou `IMGMOUNT C: IMAGES/UNIX0-HD.IMG`
 puis `BOOT C:`). `KERNEL16/TESTS/DEVENV.SH` refait l'essai automatiquement avec
 le banc d'essai sans interface de DEVENV (`/KERNELTEST`, `/KTBOOTIMG`) : il se
-connecte en root et tape quelques commandes.
+connecte en root et tape quelques commandes. L'installation s'y fait aussi
+(voir *Installation*).
 
 Prérequis sur l'hôte : Free Pascal (`fpc`) pour compiler UPC et MKIMAGE,
 `makefs` (racine UFS du disque dur), `python3`, et facultativement `nasm`
@@ -139,10 +141,22 @@ dans un segment DS commun de 64 Ko au plus.
 
 À l'amorce, la première partition de type 82h devient la zone de
 va-et-vient. La **racine** est, comme sous UNIX, la partition UFS (type A5h,
-A6h ou A9h) du disque d'amorce; la partition FAT16 d'amorce, qui contient le
-noyau, est montée sur `/boot`. Sur une disquette, la racine est le système
-FAT12 de la disquette (et une partition UFS éventuelle est montée sur
-`/usr`). `/dev` est toujours monté.
+A6h ou A9h) du disque d'amorce :
+
+* **amorce UFS** (disposition par défaut, `UNIX0-HD.IMG`) : le MBR charge
+  l'amorce `UFSBOOT` placée dans les 8 premiers Ko de la partition UFS
+  (zone que le système de fichiers réserve à l'amorce, le superbloc étant
+  à 8 Ko), comme `boot1`/`boot2` de FreeBSD : elle lit la géométrie du
+  BIOS, le superbloc et l'inode 2, cherche `unix` dans la racine et charge
+  ce fichier (blocs directs et indirection simple) à 1000:0000. Le noyau
+  est donc `/unix`, comme sous UNIX V7 ;
+* **amorce FAT16 + racine UFS** : le secteur d'amorce FAT charge `UNIX` de
+  la partition FAT16, montée ensuite sur `/boot` ;
+* sur une **disquette** (ou un disque tout FAT16), la racine est le système
+  FAT de l'unité d'amorce (et une partition UFS éventuelle est montée sur
+  `/usr`).
+
+`/dev` est toujours monté.
 
 ## Format des exécutables : COFF
 
@@ -299,8 +313,8 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
 `BUILD.SH` produit aussi une distribution, comme les bandes de UNIX V7 :
 
 * `UNIX0-INST1.IMG` : disquette amorçable avec le noyau, `init`, `getty`,
-  `login`, `sh`, l'installateur et quelques commandes, plus `/mdec/mbr` et
-  `/mdec/bootsect` (secteurs d'amorce du disque dur) ; `/etc/issue` invite à
+  `login`, `sh`, l'installateur et quelques commandes, plus `/mdec/mbr`,
+  `/mdec/ufsboot` et `/mdec/bootsect` (amorces du disque dur) ; `/etc/issue` invite à
   se connecter sous le nom `install`, dont l'interpréteur est
   `/bin/install` ;
 * `UNIX0-INST2.IMG`, … : la racine complète en **volumes tar** (ustar)
@@ -317,29 +331,71 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
 `install` (`USR/INSTALL.PAS`) :
 
 1. propose les disques durs, sauf celui d'où le système a démarré (le CD
-   émulé est `hda`, la cible est alors `hdb`), et demande confirmation ;
+   émulé est `hda`, la cible est alors `hdb`), puis le **type
+   d'installation** :
+   1. **UFS seul** (par défaut) : partition UFS1 active, amorcée
+      directement (`/mdec/ufsboot` dans sa zone d'amorce, noyau `/unix`),
+      et va-et-vient ;
+   2. **FAT16 + UFS** : FAT16 d'amorce de 4 Mo (noyau, `/boot`), racine
+      UFS1, va-et-vient ;
+   3. **FAT16 seul** : racine FAT16 (grappes de 512 octets ou plus, sans
+      permissions UNIX), va-et-vient ;
+
+   et demande confirmation ; ce qui serait monté depuis le disque cible
+   est démonté ;
 2. écrit la table des partitions (code de `/mdec/mbr`), alignées sur les
-   cylindres du BIOS : FAT16 d'amorce de 4 Mo, UFS1 pour la racine,
-   va-et-vient de 4 Mo (type 82h) ; le noyau relit la table
-   (`ioctl DIOCRESCAN`) et crée `/dev/hdX1` à `hdX3` ;
-3. formate la FAT16 (BPB pour le disque 80h, une grappe par secteur) et
-   crée le système UFS1 comme `newfs` : superbloc et copies, groupes de
-   cylindres de 32 Mo au plus (cartes des inodes, des fragments et des
-   grappes, résumés), tables d'inodes, racine (inode 2) ;
-4. monte la racine sur `/mnt` et l'amorce sur `/mnt/boot`, copie le noyau,
-   puis extrait les volumes : sur `/dev/fd0`, lu brut, en vidant le cache
-   du lecteur à chaque disquette (`ioctl DIOCINVAL`), ou depuis
+   cylindres du BIOS, avec un va-et-vient de 4 Mo (type 82h) ; le noyau
+   relit la table (`ioctl DIOCRESCAN`) et crée `/dev/hdX1`, … ;
+3. formate la FAT16 (BPB pour le disque 80h) et crée le système UFS1 comme
+   `newfs` : superbloc et copies, groupes de cylindres de 32 Mo au plus
+   (cartes des inodes, des fragments et des grappes, résumés), tables
+   d'inodes, racine (inode 2), amorce UFS ;
+4. monte la racine sur `/mnt` (et l'amorce FAT16 sur `/mnt/boot`), copie le
+   noyau, puis extrait les volumes : sur `/dev/fd0`, lu brut, en vidant le
+   cache du lecteur à chaque disquette (`ioctl DIOCINVAL`), ou depuis
    `/dist/volN.tar` ; modes (bit set-uid de `passwd` compris),
-   propriétaires et dates sont appliqués ;
+   propriétaires et dates sont appliqués. Une disquette qui n'est pas la
+   bonne est refusée et redemandée ;
 5. démonte, puis propose de redémarrer.
 
 `ioctl` des disques (UNIX-0) : `DIOCGINFO` (taille, géométrie du BIOS,
 début, type de partition), `DIOCRESCAN` (relecture du MBR, aucune
 partition du disque ne doit être montée), `DIOCINVAL` (tampons écrits puis
 oubliés : changement de disquette). `TESTS/INSTALL.PY` installe le système
-sur des disques vierges depuis les disquettes (changées par le moniteur de
-QEMU) puis depuis le CD-ROM, vérifie UFS1 et FAT16 et démarre le disque
-installé.
+sous QEMU sur des disques vierges : UFS seul depuis les disquettes (changées
+par le moniteur de QEMU), FAT16 + UFS puis FAT16 seul depuis le CD-ROM ; il
+vérifie UFS1 et FAT16 et démarre chaque disque installé.
+
+### Installation dans DEVENV
+
+Dans DEVENV, lancé en grand écran (`devenv -maxscreen`, pour voir à la fois
+l'onglet émulateur et l'Invite de commandes), on procède comme avec
+MSDOS-0 :
+
+```
+IMGMOUNT A: UNIX0-INST1.IMG
+IMGMOUNT C: disque.img
+BOOT A:
+```
+
+puis, dans l'onglet « Émulateur 8086 », connexion `install`, et à chaque
+« Inserez la disquette N » (dans l'Invite de commandes) :
+
+```
+IMGMOUNT -u A
+IMGMOUNT A: UNIX0-INST2.IMG
+```
+
+avant d'appuyer sur Entrée dans l'émulateur. À la fin : `IMGMOUNT -u A`,
+puis `BOOT C:` démarre le disque installé. Depuis le CD-ROM :
+`BOOT /CDROM:UNIX0-CD.ISO` puis aussitôt `IMGMOUNT D: disque.img` (DEVENV
+n'amorce un CD que si aucun disque n'est monté ; le disque cible doit être
+monté avant que le noyau ne recense les disques), et pour démarrer le
+disque installé : `IMGMOUNT -u C`, `IMGMOUNT -u D`, `IMGMOUNT C:
+disque.img`, `BOOT C:`. Sous Linux, DEVENV veut des chemins absolus dans
+`IMGMOUNT`. `TESTS/DEVENV_INSTALL.PY` refait cette installation en pilotant
+l'interface de DEVENV (Xvfb, xdotool) et garde une capture de chaque
+étape.
 
 ## Carte mémoire
 

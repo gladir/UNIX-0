@@ -17,11 +17,10 @@
 #  5. fabrique les images :
 #       IMAGES/UNIX0-144.IMG  disquette 1,44 Mo FAT12 (commandes essentielles)
 #       IMAGES/UNIX0-288.IMG  disquette 2,88 Mo FAT12 (commandes, sauf bash/csh/ksh)
-#       IMAGES/UNIX0-HD.IMG   disque dur : partition 1 FAT16 amorcable (le
-#                             noyau, monte sur /boot) et partition 2 UFS1
-#                             (FreeBSD), racine du systeme (makefs -t ffs;
-#                             sans makefs, racine FAT16), partition 3 de
-#                             va-et-vient (4 Mo).
+#       IMAGES/UNIX0-HD.IMG   disque dur amorce sur UFS : partition 1 UFS1
+#                             (FreeBSD, makefs -t ffs) avec UFSBOOT et le
+#                             noyau /unix, partition 2 de va-et-vient (4 Mo);
+#                             sans makefs, racine FAT16.
 #
 #  Usage : KERNEL16/BUILD.SH            (depuis n'importe quel repertoire)
 #  Variables : FPC (defaut fpc), NASM (defaut nasm), MAKEFS (defaut makefs),
@@ -49,6 +48,7 @@ echo "== Secteurs d'amorce"
 if command -v "$NASM" >/dev/null; then
   $NASM -f bin -o "$HERE/BOOTSECT.BIN" "$HERE/BOOTSECT.ASM"
   $NASM -f bin -o "$HERE/MBR.BIN" "$HERE/MBR.ASM"
+  $NASM -f bin -o "$HERE/UFSBOOT.BIN" "$HERE/UFSBOOT.ASM"
 fi
 
 echo "== Noyau"
@@ -146,15 +146,18 @@ setperms() {
 if command -v "$MAKEFS" >/dev/null; then
   # racine : partition UFS1 (FreeBSD) avec toute l'arborescence; la
   # partition FAT16 d'amorce ne contient que le noyau (montee sur /boot)
-  rm -rf "$W/ufsroot"; cp -a "$W/hd" "$W/ufsroot"; rm -f "$W/ufsroot/UNIX"
-  mkdir -p "$W/ufsroot/boot" "$W/ufsroot/usr/src" "$W/ufsroot/usr/doc" "$W/ufsroot/usr/tmp"
+  # le noyau est /unix, comme sous UNIX V7 (charge par UFSBOOT)
+  rm -rf "$W/ufsroot"; cp -a "$W/hd" "$W/ufsroot"; mv "$W/ufsroot/UNIX" "$W/ufsroot/unix"
+  mkdir -p "$W/ufsroot/usr/src" "$W/ufsroot/usr/doc" "$W/ufsroot/usr/tmp"
   cp "$ROOT"/*.PAS "$HERE/KERNEL.PAS" "$HERE/INIT.PAS" "$HERE"/USR/*.PAS "$W/ufsroot/usr/src/"
   cp "$ROOT/README.md" "$HERE/LISEZMOI.md" "$W/ufsroot/usr/doc/" 2>/dev/null || true
   setperms "$W/ufsroot"
   $MAKEFS -t ffs -o version=1 -s 16m -f 1024 "$W/ufs.img" "$W/ufsroot" > "$W/log/makefs.log"
+  # partition FAT16 d'amorce (disposition FAT16 + UFS des tests)
   rm -rf "$W/hdboot"; mkdir -p "$W/hdboot"; cp "$W/src/KERNEL.SYS" "$W/hdboot/UNIX"
-  # partition 3 : zone de va-et-vient de 4 Mo (type 82h)
-  "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hdboot" 16 "$W/ufs.img" 4
+  # disque dur amorce directement sur UFS (UFSBOOT dans la zone d'amorce de
+  # la partition 1), partition 2 : zone de va-et-vient de 4 Mo (type 82h)
+  "$W/bin/mkimage" UFS "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/UFSBOOT.BIN" "$W/ufs.img" 4
 else
   echo "   (makefs absent : racine FAT16, sans partition UFS)"
   "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hd" 24
@@ -175,6 +178,7 @@ if [ -d "$W/ufsroot" ]; then
   mkroot "$W/inst" SHELL LOGIN INSTALL LS CAT PS MKDIR RM ECHO REBOOT
   mkdir -p "$W/inst/mdec"
   cp "$HERE/MBR.BIN" "$W/inst/mdec/mbr"; cp "$HERE/BOOTSECT.BIN" "$W/inst/mdec/bootsect"
+  cp "$HERE/UFSBOOT.BIN" "$W/inst/mdec/ufsboot"
   { printf 'root::0:0:Super-utilisateur:/:/bin/sh\n'
     printf 'install::0:0:Installation de UNIX-0:/:/bin/install\n'; } > "$W/inst/etc/passwd"
   printf 'Pour installer UNIX-0 sur le disque dur, connectez-vous sous le nom\n"install" (root ouvre un interpreteur de commandes).\n\n' > "$W/inst/etc/issue"

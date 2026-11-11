@@ -18,6 +18,12 @@
      (image produite par "makefs -t ffs" ou par un newfs de FreeBSD), et
      enfin, si une taille est donnee, partition 3 de type 82h : la zone de
      va-et-vient (swap) du noyau.
+   MKIMAGE UFS image mbr.bin ufsboot.bin ufs.img [taille_va_et_vient_Mo]
+     Disque dur amorce directement sur UFS : partition 1 active de type A5h
+     contenant le systeme de fichiers UFS1, dont les 16 premiers secteurs
+     (zone d'amorce, avant le superbloc) recoivent ufsboot.bin (8 Ko,
+     KERNEL16/UFSBOOT.ASM, qui charge /unix), puis partition 2 de type 82h
+     (va-et-vient), si une taille est donnee.
 }
 
 Program MKIMAGE;
@@ -440,15 +446,81 @@ Begin
  Close(Img);
 End;
 
+Procedure MakeUfsHD;
+Var
+ Mbr: TSector;
+ Ufs, BootF: File;
+ BootBlk: Array[0..8191] Of Byte;
+ UfsSize, UfsLBA, UfsSectors, SwapLBA, SwapSectors, Total, Done, Chunk: Longint;
+ SwapMB, Code: Integer;
+ Buf: Array[0..32767] Of Byte;
+Begin
+ LoadSector(ParamStr(3),Mbr);
+ Assign(BootF,ParamStr(4)); Reset(BootF,1);
+ If (IOResult<>0) Or (FileSize(BootF)<>8192) Then Die('Amorce UFS de 8 Ko attendue: '+ParamStr(4));
+ BlockRead(BootF,BootBlk,8192); Close(BootF);
+ Assign(Ufs,ParamStr(5)); Reset(Ufs,1);
+ If IOResult<>0 Then Die('Image UFS introuvable: '+ParamStr(5));
+ UfsSize:=FileSize(Ufs);
+ SwapMB:=0;
+ If ParamCount>=6 Then Begin
+  Val(ParamStr(6),SwapMB,Code);
+  If (Code<>0) Or (SwapMB<0) Or (SwapMB>32) Then
+    Die('Taille de la zone de va-et-vient : 0 a 32 Mo');
+ End;
+ UfsLBA:=63;
+ UfsSectors:=(UfsSize+511) Div 512;
+ UfsSectors:=UfsSectors+(16*63-(UfsLBA+UfsSectors) Mod (16*63)) Mod (16*63);
+ SwapLBA:=UfsLBA+UfsSectors; SwapSectors:=0;
+ If SwapMB>0 Then Begin
+  SwapSectors:=Longint(SwapMB)*2048;
+  SwapSectors:=SwapSectors+(16*63-(SwapLBA+SwapSectors) Mod (16*63)) Mod (16*63);
+ End;
+ Total:=SwapLBA+SwapSectors;
+ Assign(Img,ParamStr(2)); Rewrite(Img,1);
+ If IOResult<>0 Then Die('Creation impossible: '+ParamStr(2));
+ ZeroImage(Total);
+ WriteLn('Disque dur ',ParamStr(2),' (',Total Div 2048,' Mo, ',
+   Total Div (16*63),' cylindres, 16 tetes, 63 secteurs), amorce UFS');
+ FillChar(Mbr[446],64,0);
+ Mbr[446]:=$80; CHS(UfsLBA,Mbr,447); Mbr[450]:=$A5;
+ CHS(UfsLBA+UfsSectors-1,Mbr,451);
+ PutLong(Mbr,454,UfsLBA); PutLong(Mbr,458,UfsSectors);
+ If SwapSectors>0 Then Begin
+  Mbr[462]:=$00; CHS(SwapLBA,Mbr,463); Mbr[466]:=$82;
+  CHS(SwapLBA+SwapSectors-1,Mbr,467);
+  PutLong(Mbr,470,SwapLBA); PutLong(Mbr,474,SwapSectors);
+ End;
+ WriteSectors(0,Mbr,1);
+ Seek(Img,UfsLBA*512); Done:=0;
+ While Done<UfsSize Do Begin
+  Chunk:=UfsSize-Done; If Chunk>SizeOf(Buf) Then Chunk:=SizeOf(Buf);
+  BlockRead(Ufs,Buf,Chunk); BlockWrite(Img,Buf,Chunk); Inc(Done,Chunk);
+ End;
+ Close(Ufs);
+ { zone d'amorce de la partition : UFSBOOT (debut de partition, unite) }
+ PutLong(BootBlk,$1C,UfsLBA); BootBlk[$24]:=$80;
+ Seek(Img,UfsLBA*512); BlockWrite(Img,BootBlk,8192);
+ If IOResult<>0 Then Die('Ecriture de l''image impossible');
+ WriteLn('  UFS : partition 1 (type A5h, active), ',UfsSectors,
+   ' secteurs a partir du secteur ',UfsLBA);
+ If SwapSectors>0 Then
+  WriteLn('  va-et-vient : partition 2 (type 82h), ',SwapSectors,
+    ' secteurs a partir du secteur ',SwapLBA);
+ Close(Img);
+End;
+
 Var Mode: String; I: Integer;
 BEGIN
  If ParamCount<4 Then Begin
   WriteLn('MKIMAGE FLOPPY image boot.bin repertoire [taille_Ko]');
   WriteLn('MKIMAGE HD image mbr.bin boot.bin repertoire taille_FAT_Mo [ufs.img [swap_Mo]]');
+  WriteLn('MKIMAGE UFS image mbr.bin ufsboot.bin ufs.img [swap_Mo]');
   Halt(1);
  End;
  Mode:=ParamStr(1); For I:=1 To Length(Mode) Do Mode[I]:=UpCase(Mode[I]);
  If Mode='FLOPPY' Then MakeFloppy
  Else If (Mode='HD') And (ParamCount>=6) Then MakeHD
+ Else If (Mode='UFS') And (ParamCount>=5) Then MakeUfsHD
  Else Die('Mode inconnu ou arguments manquants');
 END.

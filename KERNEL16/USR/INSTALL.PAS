@@ -5,12 +5,19 @@
   @description: Programme d'installation de UNIX-0 (/bin/install) : installe
    le systeme sur un disque dur, a partir des disquettes d'installation ou
    du CD-ROM.
-    1. choix du disque dur (pas celui d'ou le systeme a demarre);
-    2. table des partitions (MBR) : partition 1 FAT16 d'amorce (4 Mo, le
-       noyau), partition 2 UFS1 (racine), partition 3 de va-et-vient (4 Mo,
-       type 82h), alignees sur les cylindres du BIOS;
-    3. formatage FAT16 (secteur d'amorce /mdec/bootsect) et creation du
-       systeme de fichiers UFS1 (comme newfs);
+    1. choix du disque dur (pas celui d'ou le systeme a demarre) et du type
+       d'installation :
+        1) UFS seul (par defaut) : partition UFS1 active, amorcee
+           directement (amorce /mdec/ufsboot dans ses 8 premiers Ko, noyau
+           /unix), et partition de va-et-vient;
+        2) FAT16 + UFS : partition FAT16 d'amorce de 4 Mo (secteur
+           /mdec/bootsect, noyau, montee sur /boot), racine UFS1,
+           va-et-vient;
+        3) FAT16 seul : racine FAT16 (sans permissions UNIX), va-et-vient;
+    2. table des partitions (MBR, code /mdec/mbr), alignees sur les
+       cylindres du BIOS; le va-et-vient fait 4 Mo (type 82h);
+    3. formatage FAT16 et creation du systeme de fichiers UFS1 (comme
+       newfs), amorces;
     4. copie du noyau, puis extraction des volumes tar de la distribution
        (disquettes 2, 3, ... lues directement sur /dev/fd0, ou fichiers
        /dist/volN.tar du CD-ROM), avec modes, proprietaires et dates.
@@ -45,11 +52,13 @@ Var
  Zero: Array[0..8191] Of Byte;
  Sec: Array[0..511] Of Byte;
  MbrCode, BootCode: Array[0..511] Of Byte;
+ Layout: Integer;                    { 1 UFS, 2 FAT16 + UFS, 3 FAT16 }
+ UfsPart, FatPart: String[1];        { numeros des partitions ('' : aucune) }
+ UfsStart, UfsSize, FatStart, FatSize, SwapStart, SwapSize: Longint;
  CsTab: Array[0..1023] Of Byte;      { resume des groupes (64 groupes au plus) }
  Disk: String[7];                    { disque choisi : hda, hdb }
  Info: TDiskInfo;
  FromCD: Boolean;
- P1Start,P1Size,P2Start,P2Size,P3Start,P3Size: Longint;
  Now: Longint;
  Files,Dirs: Longint;
  { lecture d'un volume tar par blocs }
@@ -208,30 +217,67 @@ Begin
  PutL(Sec,O+8,Start); PutL(Sec,O+12,Size);
 End;
 
+Procedure ChooseLayout;
+Var S: String; E: Integer;
+Begin
+ WriteLn('Type d''installation :');
+ WriteLn('  1) UFS seul : amorce et racine UFS1 (recommande)');
+ WriteLn('  2) FAT16 d''amorce (noyau, /boot) et racine UFS1');
+ WriteLn('  3) FAT16 seul (sans permissions UNIX)');
+ S:=Ask('Choix [1] : ');
+ Layout:=1;
+ If S<>'' Then Val(S,Layout,E);
+ If (Layout<1)Or(Layout>3) Then Fatal('choix invalide');
+End;
+
 Procedure Partition;
-Var Cyl,Cyls,BootCyl,SwapCyl: Longint; Fd: Integer;
+Var Cyl,Cyls,BootCyl,SwapCyl,First: Longint; Fd,N: Integer;
 Begin
  Cyl:=Longint(Info.Heads)*Info.Spt;
  Cyls:=Info.Cyls; If Cyls>1024 Then Cyls:=1024;   { limite du BIOS (CHS) }
- BootCyl:=(Longint(BOOTMB)*2048+Cyl-1) Div Cyl;
+ BootCyl:=0;
+ If Layout=2 Then BootCyl:=(Longint(BOOTMB)*2048+Cyl-1) Div Cyl;
  SwapCyl:=(Longint(SWAPMB)*2048+Cyl-1) Div Cyl;
- If (Cyls-BootCyl)*Cyl<Longint(MINUFSMB+SWAPMB)*2048 Then SwapCyl:=0;
- P1Start:=Info.Spt; P1Size:=BootCyl*Cyl-Info.Spt;
- P2Start:=BootCyl*Cyl; P2Size:=(Cyls-BootCyl-SwapCyl)*Cyl;
- P3Start:=(Cyls-SwapCyl)*Cyl; P3Size:=SwapCyl*Cyl;
- If P2Size<Longint(MINUFSMB)*2048 Then
+ If (Cyls-BootCyl-SwapCyl)*Cyl<Longint(MINUFSMB)*2048 Then SwapCyl:=0;
+ { la premiere partition commence a la piste 1 (piste 0 : le MBR) }
+ If BootCyl>0 Then First:=BootCyl*Cyl Else First:=Info.Spt;
+ SwapSize:=SwapCyl*Cyl; SwapStart:=(Cyls-SwapCyl)*Cyl;
+ UfsPart:=''; FatPart:='';
+ Case Layout Of
+  1: Begin UfsPart:='1'; UfsStart:=First; UfsSize:=SwapStart-First End;
+  2: Begin
+      FatPart:='1'; FatStart:=Info.Spt; FatSize:=BootCyl*Cyl-Info.Spt;
+      UfsPart:='2'; UfsStart:=First; UfsSize:=SwapStart-First;
+     End;
+  3: Begin FatPart:='1'; FatStart:=First; FatSize:=SwapStart-First End;
+ End;
+ If ((UfsPart<>'')And(UfsSize<Longint(MINUFSMB)*2048)) Or
+   ((Layout=3)And(FatSize<Longint(MINUFSMB)*2048)) Then
   Fatal('disque trop petit (au moins '+IStr(BOOTMB+MINUFSMB)+' Mo)');
  WriteLn('Partitions :');
- WriteLn('  /dev/',Disk,'1 : FAT16, amorce et noyau (/boot), ',P1Size Div 2048,' Mo');
- WriteLn('  /dev/',Disk,'2 : UFS1, racine, ',P2Size Div 2048,' Mo');
- If P3Size>0 Then WriteLn('  /dev/',Disk,'3 : va-et-vient, ',P3Size Div 2048,' Mo');
+ N:=0;
  Fd:=OpenDev(Disk);
  Move(MbrCode,Sec,446);
  FillChar(Sec[446],64,0);
- Entry(0,True,$04,P1Start,P1Size);
- If P1Size>=65536 Then Sec[446+4]:=$06;
- Entry(1,False,$A5,P2Start,P2Size);
- If P3Size>0 Then Entry(2,False,$82,P3Start,P3Size);
+ If FatPart<>'' Then Begin
+  If Layout=2 Then
+   WriteLn('  /dev/',Disk,FatPart,' : FAT16, amorce et noyau (/boot), ',FatSize Div 2048,' Mo')
+  Else WriteLn('  /dev/',Disk,FatPart,' : FAT16, amorce et racine, ',FatSize Div 2048,' Mo');
+  Entry(N,True,$04,FatStart,FatSize);
+  If FatSize>=65536 Then Sec[446+N*16+4]:=$06;
+  Inc(N);
+ End;
+ If UfsPart<>'' Then Begin
+  If Layout=1 Then
+   WriteLn('  /dev/',Disk,UfsPart,' : UFS1, amorce et racine, ',UfsSize Div 2048,' Mo')
+  Else WriteLn('  /dev/',Disk,UfsPart,' : UFS1, racine, ',UfsSize Div 2048,' Mo');
+  Entry(N,Layout=1,$A5,UfsStart,UfsSize);
+  Inc(N);
+ End;
+ If SwapSize>0 Then Begin
+  WriteLn('  /dev/',Disk,N+1,' : va-et-vient, ',SwapSize Div 2048,' Mo');
+  Entry(N,False,$82,SwapStart,SwapSize);
+ End;
  Sec[510]:=$55; Sec[511]:=$AA;
  WriteAt(Fd,0,Sec,512);
  SysSync;
@@ -240,29 +286,45 @@ Begin
  SysClose(Fd);
 End;
 
+Procedure Release;
+{ demonte ce qui viendrait du disque cible (le noyau monte au demarrage une
+  partition UFS trouvee sur /usr) }
+Var I: Integer; M: TMountInfo;
+Begin
+ For I:=8 DownTo 2 Do
+  If SysMountInfo(I,M) Then
+   If Copy(M.Special,1,Length(Disk))=Disk Then
+    If SysUmount(M.Dir)<0 Then
+     Fatal(M.Dir+' (/dev/'+M.Special+') est occupe : '+SysErrorText(Errno));
+End;
+
 { --- 3a. FAT16 ----------------------------------------------------------- }
 
 Procedure FormatFat;
-Var Fd: Integer; Spf,Clus,Data: Longint; I: Integer;
-Const Lab: String[11]='UNIX-0 BOOT';
+{ FAT16 sur /dev/<disque><FatPart> : grappes de 512 octets ou plus (au
+  plus 65524 grappes), secteur d'amorce /mdec/bootsect }
+Var Fd: Integer; Spf,Clus,Data,Spc: Longint; I: Integer;
+Const Lab: String[11]='UNIX-0     ';
 Begin
- Write('Formatage FAT16 de /dev/',Disk,'1...');
+ Write('Formatage FAT16 de /dev/',Disk,FatPart,'...');
+ Spc:=1;
+ While FatSize Div Spc>65000 Do Spc:=Spc*2;
  Spf:=1;
  Repeat
   Data:=1+2*Spf+32;
-  Clus:=P1Size-Data;
+  Clus:=(FatSize-Data) Div Spc;
   If (Clus+2)*2>Spf*512 Then Inc(Spf) Else Break;
  Until False;
- If (Clus<4085)Or(Clus>65524) Then Fatal('taille de partition FAT16 invalide');
- Fd:=OpenDev(Disk+'1');
+ If (Clus<4085)Or(Clus>65524)Or(Spc>64) Then Fatal('taille de partition FAT16 invalide');
+ Fd:=OpenDev(Disk+FatPart);
  Move(BootCode,Sec,512);
  PutStr(3,'UNIX-0  ');
- PutW(Sec,$0B,512); Sec[$0D]:=1; PutW(Sec,$0E,1); Sec[$10]:=2;
+ PutW(Sec,$0B,512); Sec[$0D]:=Spc; PutW(Sec,$0E,1); Sec[$10]:=2;
  PutW(Sec,$11,512);
- If P1Size<65536 Then Begin PutW(Sec,$13,P1Size); PutL(Sec,$20,0) End
- Else Begin PutW(Sec,$13,0); PutL(Sec,$20,P1Size) End;
+ If FatSize<65536 Then Begin PutW(Sec,$13,FatSize); PutL(Sec,$20,0) End
+ Else Begin PutW(Sec,$13,0); PutL(Sec,$20,FatSize) End;
  Sec[$15]:=$F8; PutW(Sec,$16,Spf); PutW(Sec,$18,Info.Spt);
- PutW(Sec,$1A,Info.Heads); PutL(Sec,$1C,P1Start);
+ PutW(Sec,$1A,Info.Heads); PutL(Sec,$1C,FatStart);
  Sec[$24]:=$80;                 { le disque installe demarrera comme 80h }
  Sec[$25]:=0; Sec[$26]:=$29; PutL(Sec,$27,Now);
  For I:=1 To 11 Do Sec[$2B+I-1]:=Ord(Lab[I]);
@@ -279,7 +341,7 @@ Begin
  Sec[11]:=$08;
  WriteAt(Fd,1+2*Spf,Sec,512);
  SysClose(Fd);
- WriteLn(' ',Clus,' grappes de 512 octets');
+ WriteLn(' ',Clus,' grappes de ',Spc*512,' octets');
 End;
 
 { --- 3b. UFS1 (newfs) ----------------------------------------------------- }
@@ -309,8 +371,8 @@ Var
  FrSum: Array[0..8] Of Longint;
  ClSum: Array[0..8] Of Longint;
 Begin
- Write('Creation du systeme de fichiers UFS1 sur /dev/',Disk,'2...');
- Frags:=P2Size Div 2; Frags:=Frags-Frags Mod FRAG;
+ Write('Creation du systeme de fichiers UFS1 sur /dev/',Disk,UfsPart,'...');
+ Frags:=UfsSize Div 2; Frags:=Frags-Frags Mod FRAG;
  If Frags<=MAXFPG Then Begin Ncg:=1; Fpg:=Frags End
  Else Begin
   Fpg:=MAXFPG; Ncg:=(Frags+Fpg-1) Div Fpg;
@@ -331,7 +393,7 @@ Begin
  ONext:=OClus+(Fpg Div FRAG+7) Div 8;
  CgSize:=((ONext+FSIZE-1) Div FSIZE)*FSIZE;
  If CgSize>BSIZE Then Fatal('groupe de cylindres trop grand');
- Fd:=OpenDev(Disk+'2');
+ Fd:=OpenDev(Disk+UfsPart);
  FillChar(CsTab,SizeOf(CsTab),0);
  Tot0:=0; Tot1:=0; Tot2:=0; Tot3:=0;
  For C:=0 To Ncg-1 Do Begin
@@ -422,6 +484,12 @@ Begin
  PutL(Big,1356,1); PutL(Big,1360,1); PutL(Big,1372,$011954);
  WriteAt(Fd,16,Big,2048);
  For C:=0 To Ncg-1 Do WriteAt(Fd,(Longint(C)*Fpg+SBLKNO)*2,Big,2048);
+ If Layout=1 Then Begin
+  { zone d'amorce (8 premiers Ko) : UFSBOOT, qui charge /unix }
+  If LoadFile('/mdec/ufsboot',Big,8192)<>8192 Then Fatal('/mdec/ufsboot invalide');
+  PutL(Big,$1C,UfsStart); Big[$24]:=$80;
+  WriteAt(Fd,0,Big,8192);
+ End;
  SysClose(Fd);
  SysSync;
  WriteLn(' ',Ncg,' groupe(s), ',Ipg*Ncg,' inodes, ',Tot1*BSIZE Div 1024,' Ko libres');
@@ -575,25 +643,37 @@ BEGIN
  WriteLn;
  ChooseDisk;
  WriteLn;
+ ChooseLayout;
+ WriteLn;
  WriteLn('ATTENTION : tout le contenu de /dev/',Disk,' sera efface.');
  If Not Yes('Continuer ?') Then Fatal('annulee par l''utilisateur');
  WriteLn;
+ Release;
  Partition;
- FormatFat;
- NewFs;
- { montage du nouveau systeme sur /mnt, partition d'amorce sur /mnt/boot }
- If SysMount('/dev/'+Disk+'2','/mnt',FS_UFS)<0 Then
-  Fatal('montage de /dev/'+Disk+'2 : '+SysErrorText(Errno));
- SysMkdir('/mnt/boot',$1ED);
- If SysMount('/dev/'+Disk+'1','/mnt/boot',FS_FAT)<0 Then
-  Fatal('montage de /dev/'+Disk+'1 : '+SysErrorText(Errno));
+ If FatPart<>'' Then FormatFat;
+ If UfsPart<>'' Then NewFs;
+ { montage du nouveau systeme sur /mnt (et de la partition d'amorce FAT16
+   sur /mnt/boot), puis copie du noyau }
+ If UfsPart<>'' Then Begin
+  If SysMount('/dev/'+Disk+UfsPart,'/mnt',FS_UFS)<0 Then
+   Fatal('montage de /dev/'+Disk+UfsPart+' : '+SysErrorText(Errno));
+ End Else If SysMount('/dev/'+Disk+FatPart,'/mnt',FS_FAT)<0 Then
+  Fatal('montage de /dev/'+Disk+FatPart+' : '+SysErrorText(Errno));
+ If Layout=2 Then Begin
+  SysMkdir('/mnt/boot',$1ED);
+  If SysMount('/dev/'+Disk+FatPart,'/mnt/boot',FS_FAT)<0 Then
+   Fatal('montage de /dev/'+Disk+FatPart+' : '+SysErrorText(Errno));
+ End;
  Write('Copie du noyau...');
- CopyFile('/UNIX','/mnt/boot/UNIX',$1A4);
- WriteLn(' /boot/unix');
+ Case Layout Of
+  1: Begin CopyFile('/UNIX','/mnt/unix',$1A4); WriteLn(' /unix') End;
+  2: Begin CopyFile('/UNIX','/mnt/boot/UNIX',$1A4); WriteLn(' /boot/unix') End;
+  3: Begin CopyFile('/UNIX','/mnt/UNIX',$1A4); WriteLn(' /unix') End;
+ End;
  Files:=0; Dirs:=0;
  Volumes;
  SysSync;
- SysUmount('/mnt/boot');
+ If Layout=2 Then SysUmount('/mnt/boot');
  SysUmount('/mnt');
  SysSync;
  WriteLn;

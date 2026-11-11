@@ -5637,15 +5637,21 @@ BEGIN
  SetVector($08,Seg(Int08Stub),Ofs(Int08Stub));
  { systemes de fichiers }
  { racine : comme un UNIX, la partition UFS (FreeBSD, type A5h) du disque
-   d'amorce s'il y en a une; l'unite d'amorce FAT, qui contient le noyau,
-   est alors montee sur /boot. Sinon (disquettes), la racine est l'unite
-   d'amorce FAT, et une partition UFS est montee sur /usr. }
+   d'amorce s'il y en a une. Amorce UFS (UFSBOOT) : c'est la partition
+   d'amorce elle-meme (noyau /unix). Amorce FAT16 : la partition FAT, qui
+   contient le noyau, est montee sur /boot. Sinon (disquettes, disque tout
+   FAT), la racine est l'unite d'amorce FAT et une partition UFS eventuelle
+   est montee sur /usr. }
  Boot:=RootDevice;
  If Boot='' Then Panic('unite d''amorce inconnue');
  Root:='';
  For I:=0 To DiskCount-1 Do
   If (Root='') And (Disks[I].Bios=BootDrive) And (Disks[I].PartType In [$A5,$A6,$A9]) Then
    Root:=Disks[I].Name;
+ { amorce UFS : la partition d'amorce, si elle est de type UFS }
+ For I:=0 To DiskCount-1 Do
+  If (Disks[I].Name=Boot) And (Disks[I].PartType In [$A5,$A6,$A9]) Then
+   Root:=Boot;
  E:=1;
  If Root<>'' Then E:=DoMount(Root,'/',2);
  If E<>0 Then Begin Root:=Boot; E:=DoMount(Root,'/',0) End;
@@ -5656,7 +5662,7 @@ BEGIN
  If Root<>Boot Then Begin
   E:=DoMount(Boot,'/boot',1);
   If E=0 Then KPrintLn('/boot : /dev/'+Boot+' (noyau)');
- End Else
+ End Else If Mounts[1].Typ<>FSUFS Then
   For I:=0 To DiskCount-1 Do
    If Disks[I].PartType In [$A5,$A6,$A9] Then
     If Not IsMountDir('/usr') Then Begin
