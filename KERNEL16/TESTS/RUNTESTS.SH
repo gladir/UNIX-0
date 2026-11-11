@@ -8,7 +8,8 @@
 #   les systemes de
 #   fichiers sont verifies : UFS1 par TOOLS/UFSCHK.PY, FAT16 par fsck.vfat
 #   (paquet dosfstools), s'il est present; enfin TESTS/SESSION.PY ouvre une
-#   session complete (getty, login, sh) par la console serie.
+#   session complete (getty, login, sh) par la console serie, et INSTALL.PY
+#   installe le systeme depuis les disquettes puis le CD-ROM.
 #   Usage : KERNEL16/TESTS/RUNTESTS.SH   (W = repertoire de BUILD.SH)
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -52,4 +53,10 @@ python3 "$HERE/SESSION.PY" "$ROOT/IMAGES/UNIX0-HD.IMG" > "$T/session.out" 2>&1 |
 grep -c "^ok" "$T/session.out" | sed 's/^/controles reussis : /'
 grep "^ECHEC" "$T/session.out"
 tail -1 "$T/session.out"
+# installation : disquettes et CD-ROM de IMAGES/ sur des disques vierges
+echo "== Installation (disquettes, CD-ROM)"
+python3 "$HERE/INSTALL.PY" "$ROOT/IMAGES" > "$T/install.out" 2>&1 || fail=1
+grep -c "^ok" "$T/install.out" | sed 's/^/controles reussis : /'
+grep "^ECHEC" "$T/install.out"
+tail -1 "$T/install.out"
 [ $fail = 0 ] && echo "Tous les tests passent." || { echo "Des tests echouent."; exit 1; }

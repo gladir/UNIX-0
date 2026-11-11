@@ -1225,6 +1225,8 @@ Function BufSeg(B: Integer): Word;
 Procedure BInval(D: Integer);
 Function AddDisk(Bios: Byte; Name: String; Start, Sectors: Longint;
   PType: Byte): Integer;
+Procedure SetGeometry(D: Integer);
+Function DiskRescan(D: Integer): Integer;
 
 SegmentImplementation
 
@@ -1300,6 +1302,7 @@ Var C,H,S,Cmd,Drv,Tries,Ok: Byte; Cyl: Word; T: Longint;
 Begin
  DiskIO:=False;
  If (D<0) Or (D>=DiskCount) Then Exit;
+ If Not Disks[D].Present Then Exit;
  SetGeometry(D);
  With Disks[D] Do Begin
   If (Sectors<>0) And (LBA>=Sectors) Then Exit;
@@ -1434,6 +1437,38 @@ Var I: Integer;
 Begin
  BFlush(D);
  For I:=1 To NBUF Do If BufDev[I]=D Then BufDev[I]:=$FF;
+End;
+
+Var
+ ScanBuf: Array[0..511] Of Byte;
+
+Function DiskRescan(D: Integer): Integer;
+{ relit la table des partitions (MBR) du disque dur entier D, apres son
+  ecriture par un programme (installation) : les partitions hdX1 a hdX4
+  sont mises a jour, ajoutees ou retirees }
+Var J,K,I: Integer; T: Byte; S,N: Longint; Nm: String[7];
+Begin
+ DiskRescan:=EINVAL;
+ If (D<0) Or (D>=DiskCount) Then Exit;
+ If (Disks[D].Start<>0) Or (Disks[D].Bios<$80) Then Exit;
+ BInval(D);
+ DiskRescan:=EIO;
+ If Not DiskIO(D,0,Seg(ScanBuf),Ofs(ScanBuf),False) Then Exit;
+ For J:=0 To 3 Do Begin
+  T:=ScanBuf[446+J*16+4];
+  S:=MemL[Seg(ScanBuf):Ofs(ScanBuf)+446+J*16+8];
+  N:=MemL[Seg(ScanBuf):Ofs(ScanBuf)+446+J*16+12];
+  If (ScanBuf[510]<>$55) Or (ScanBuf[511]<>$AA) Then T:=0;
+  Nm:=Disks[D].Name+Chr(49+J);
+  K:=-1;
+  For I:=0 To DiskCount-1 Do If Disks[I].Name=Nm Then K:=I;
+  If K>=0 Then Begin
+   BInval(K);
+   Disks[K].Present:=(T<>0) And (N<>0);
+   Disks[K].Start:=S; Disks[K].Sectors:=N; Disks[K].PartType:=T;
+  End Else If (T<>0) And (N<>0) Then AddDisk(Disks[D].Bios,Nm,S,N,T);
+ End;
+ DiskRescan:=0;
 End;
 
 SegmentEnd;
@@ -3608,6 +3643,7 @@ End;
 
 Function DiskSize(D: Integer): Longint;
 Begin
+ SetGeometry(D);
  With Disks[D] Do
   If Sectors<>0 Then DiskSize:=Sectors
   Else DiskSize:=Longint(Spt)*Heads*Cyls;
@@ -4675,6 +4711,8 @@ Const
  TIOCHPCL=$7402; TIOCGETP=$7408; TIOCSETP=$7409; TIOCSETN=$740A;
  TIOCEXCL=$740D; TIOCNXCL=$740E; TIOCFLUSH=$7410; TIOCSETC=$7411;
  TIOCGETC=$7412; FIONREAD=$667F;
+ { disques (UNIX-0, pour l'installation) }
+ DIOCGINFO=$6401; DIOCRESCAN=$6402; DIOCINVAL=$6403;
 
 Var
  { registres de l'appel en cours : sauvegardes avec le processus par Swtch
@@ -4988,6 +5026,37 @@ Begin
  If C.RCX<>0 Then PostSig(P,C.RCX);
 End;
 
+Function DiskIoctl(D: Integer): Integer;
+{ DIOCGINFO : secteurs (32 bits), tetes, secteurs par piste, cylindres,
+  debut (32 bits), type de partition, unite BIOS; DIOCRESCAN : relecture
+  de la table des partitions (aucune partition du disque montee);
+  DIOCINVAL : tampons du disque ecrits puis oublies (changement de
+  disquette) }
+Var M: Integer;
+Begin
+ DiskIoctl:=0;
+ Case C.RCX Of
+  DIOCGINFO: With Disks[D] Do Begin
+   SetGeometry(D);
+   If Sectors<>0 Then MemL[C.RDS:C.RDX]:=Sectors
+   Else MemL[C.RDS:C.RDX]:=Longint(Cyls)*Heads*Spt;
+   MemW[C.RDS:C.RDX+4]:=Heads; MemW[C.RDS:C.RDX+6]:=Spt;
+   MemW[C.RDS:C.RDX+8]:=Cyls; MemL[C.RDS:C.RDX+10]:=Start;
+   Mem[C.RDS:C.RDX+14]:=PartType; Mem[C.RDS:C.RDX+15]:=Bios;
+  End;
+  DIOCRESCAN: Begin
+   If Not Suser Then Begin DiskIoctl:=EPERM; Exit End;
+   For M:=1 To NMOUNT Do
+    If Mounts[M].Used And (Mounts[M].Typ<>FSDEV) And
+      (Disks[Mounts[M].Drive].Bios=Disks[D].Bios) Then Begin
+     DiskIoctl:=EBUSY; Exit;
+    End;
+   DiskIoctl:=DiskRescan(D);
+  End;
+  DIOCINVAL: BInval(D);
+ End;
+End;
+
 Function SysIoctl: Integer;
 { ioctl(fd, requete, DS:DX argument) : sgttyb et tchars de UNIX V7 pour la
   console, FIONREAD (4.2BSD) pour la console, les tubes et les fichiers }
@@ -4997,6 +5066,11 @@ Begin
  If F=0 Then Exit;
  Vn:=Files[F].Vn;
  IsTty:=(VNodes[Vn].Typ=VCHR) And (VNodes[Vn].Minor=DEVTTY);
+ If (VNodes[Vn].Typ=VCHR) And (VNodes[Vn].Minor>=DEVDISK) And
+   (C.RCX>=DIOCGINFO) And (C.RCX<=DIOCINVAL) Then Begin
+  SysIoctl:=DiskIoctl(VNodes[Vn].Minor-DEVDISK);
+  Exit;
+ End;
  If C.RCX=FIONREAD Then Begin
   If IsTty Then N:=TtyAvail
   Else If VNodes[Vn].Typ=VFIFO Then N:=PipeCount[VNodes[Vn].Minor]

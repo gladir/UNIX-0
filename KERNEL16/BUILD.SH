@@ -159,4 +159,40 @@ else
   echo "   (makefs absent : racine FAT16, sans partition UFS)"
   "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hd" 24
 fi
+
+# ---------------------------------------------------------------------------
+# distribution : disquettes d'installation et CD-ROM d'installation
+#   UNIX0-INST1.IMG     disquette 1 (amorcable) : noyau, init, getty, login,
+#                       sh, install et quelques commandes; /mdec/mbr et
+#                       /mdec/bootsect (secteurs d'amorce du disque dur)
+#   UNIX0-INST2.IMG...  disquettes de donnees : volumes tar de la racine
+#                       complete (TOOLS/MKVOL.PY), lus par install sur /dev/fd0
+#   UNIX0-CD.ISO        CD-ROM El Torito (emulation de disque dur) : la
+#                       disquette 1 et les volumes dans /dist (TOOLS/MKISO.PY)
+if [ -d "$W/ufsroot" ]; then
+  echo "== Distribution (installation)"
+  rm -f "$ROOT"/IMAGES/UNIX0-INST*.IMG
+  mkroot "$W/inst" SHELL LOGIN INSTALL LS CAT PS MKDIR RM ECHO REBOOT
+  mkdir -p "$W/inst/mdec"
+  cp "$HERE/MBR.BIN" "$W/inst/mdec/mbr"; cp "$HERE/BOOTSECT.BIN" "$W/inst/mdec/bootsect"
+  { printf 'root::0:0:Super-utilisateur:/:/bin/sh\n'
+    printf 'install::0:0:Installation de UNIX-0:/:/bin/install\n'; } > "$W/inst/etc/passwd"
+  printf 'Pour installer UNIX-0 sur le disque dur, connectez-vous sous le nom\n"install" (root ouvre un interpreteur de commandes).\n\n' > "$W/inst/etc/issue"
+  printf 'Support d installation de UNIX-0.\n' > "$W/inst/etc/motd"
+  rm -rf "$W/vol"; mkdir -p "$W/vol"
+  python3 "$ROOT/TOOLS/MKVOL.PY" "$W/ufsroot" "$W/vol/INST" 2 | tee "$W/log/mkvol.log"
+  for f in "$W"/vol/INST*.IMG; do cp "$f" "$ROOT/IMAGES/UNIX0-$(basename "$f")"; done
+  "$W/bin/mkimage" FLOPPY "$ROOT/IMAGES/UNIX0-INST1.IMG" "$HERE/BOOTSECT.BIN" "$W/inst" 1440
+  NF=$(ls "$ROOT"/IMAGES/UNIX0-INST*.IMG | wc -l)
+  echo "   $NF disquettes d'installation : UNIX0-INST1.IMG (amorce) a UNIX0-INST$NF.IMG"
+  # CD-ROM : disque emule d'une seule partition FAT16 (SeaBIOS et la plupart
+  # des BIOS ne dimensionnent le disque emule que d'apres la partition 1)
+  rm -rf "$W/cd"; cp -a "$W/inst" "$W/cd"; mkdir -p "$W/cd/dist"
+  for f in "$W"/vol/INST*.TAR; do
+    n=$(basename "$f" .TAR); cp "$f" "$W/cd/dist/vol${n#INST}.tar"
+  done
+  "$W/bin/mkimage" HD "$W/cdhd.img" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/cd" 8 > "$W/log/cdhd.log"
+  cp "$ROOT/IMAGES/LISEZMOI.TXT" "$W/LISEZMOI.TXT"
+  python3 "$ROOT/TOOLS/MKISO.PY" "$ROOT/IMAGES/UNIX0-CD.ISO" "$W/cdhd.img" "$W/LISEZMOI.TXT"
+fi
 ls -l "$ROOT/IMAGES"

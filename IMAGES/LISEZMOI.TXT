@@ -13,7 +13,40 @@ UNIX0-HD.IMG   disque dur de 36 Mo (16 tetes, 63 secteurs par piste) :
                sources du projet dans /usr/src; partition 3 de type 82h
                (4 Mo) : la zone de va-et-vient (swap) du noyau.
 
-Demarrage sous QEMU :
+Distribution (installation sur un disque dur, programme /bin/install) :
+
+UNIX0-INST1.IMG  disquette 1,44 Mo FAT12 amorcable : noyau, init, getty,
+                 login, sh, l'installateur et quelques commandes, plus les
+                 secteurs d'amorce du disque dur (/mdec/mbr, /mdec/bootsect).
+UNIX0-INST2.IMG  disquettes de donnees : la racine complete du systeme (64
+a INST4.IMG      commandes, /etc, sources dans /usr/src) en volumes tar
+                 ecrits directement sur la disquette (sans systeme de
+                 fichiers), comme les bandes de distribution de UNIX V7.
+                 Il faut donc 4 disquettes de 1,44 Mo en tout : 1 d'amorce
+                 et 3 de donnees (le nombre est recalcule par BUILD.SH).
+UNIX0-CD.ISO     CD-ROM ISO 9660 amorcable (El Torito, emulation de disque
+                 dur) : la disquette 1 et les volumes dans /dist.
+
+Pour installer : demarrer sur la disquette 1 (ou le CD-ROM), se connecter
+sous le nom "install", choisir le disque, confirmer, puis inserer les
+disquettes 2, 3 et 4 a la demande. L'installateur cree trois partitions
+(FAT16 d'amorce de 4 Mo avec le noyau, racine UFS1, va-et-vient de 4 Mo),
+les systemes de fichiers, puis copie tout. Le disque doit faire au moins
+16 Mo; seuls les 1024 premiers cylindres du BIOS sont utilises (504 Mo).
+Avec le CD-ROM, le BIOS presente le CD comme premier disque dur (hda) :
+l'installation se fait sur hdb, qui demarrera ensuite comme 80h.
+
+  qemu-system-i386 -fda UNIX0-INST1.IMG -hda disque.img -boot a
+      (dans le moniteur de QEMU, Ctrl+Alt+2 :
+       change floppy0 UNIX0-INST2.IMG, puis 3 et 4)
+  qemu-system-i386 -cdrom UNIX0-CD.ISO -hda disque.img -boot d
+  qemu-system-i386 -hda disque.img -boot c       (le systeme installe)
+
+Un disque vierge se cree par exemple avec : truncate -s 64M disque.img
+Sur un vrai PC : dd if=UNIX0-INSTn.IMG of=/dev/fd0 pour chaque disquette,
+ou graver UNIX0-CD.ISO.
+
+Demarrage sous QEMU (images toutes faites) :
 
   qemu-system-i386 -drive file=UNIX0-144.IMG,format=raw,if=floppy -boot a
   qemu-system-i386 -drive file=UNIX0-288.IMG,format=raw,if=floppy -boot a

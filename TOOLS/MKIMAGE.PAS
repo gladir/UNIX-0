@@ -35,7 +35,7 @@ Type
  PFatTable = ^TFatTable;
  TDirBuf = Array[0..65535] Of Byte;
  PDirBuf = ^TDirBuf;
- TBig = Array[0..1048575] Of Byte;
+ TBig = Array[0..4194303] Of Byte;
  PBig = ^TBig;
 
 Var
@@ -370,14 +370,14 @@ Begin
  LoadSector(ParamStr(3),Mbr);
  LoadSector(ParamStr(4),Boot);
  Val(ParamStr(6),FatMB,Code);
- If (Code<>0) Or (FatMB<16) Or (FatMB>128) Then
-   Die('Taille de la partition FAT16 : 16 a 128 Mo');
+ If (Code<>0) Or (FatMB<8) Or (FatMB>128) Then
+   Die('Taille de la partition FAT16 : 8 a 128 Mo');
  UfsName:=''; If ParamCount>=7 Then UfsName:=ParamStr(7);
  PartLBA:=63;
  TotalSectors:=Longint(FatMB)*2048-63;
  TotalSectors:=TotalSectors-(TotalSectors+63) Mod (16*63);
- If FatMB<=32 Then SecPerClus:=4 Else If FatMB<=64 Then SecPerClus:=8
-   Else SecPerClus:=16;
+ If FatMB<16 Then SecPerClus:=1 Else If FatMB<=32 Then SecPerClus:=4
+   Else If FatMB<=64 Then SecPerClus:=8 Else SecPerClus:=16;
  Reserved:=1; NumFats:=2; RootEntries:=512; SecPerFat:=1; SecPerTrack:=63;
  Heads:=16; Media:=$F8; Fat16:=True;
  UfsLBA:=PartLBA+TotalSectors; UfsSectors:=0; UfsSize:=0;

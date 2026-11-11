@@ -18,6 +18,7 @@ de code répartis en segments, 31 Ko de données). Son interface suit celle de
 | `USR/PASSWD.PAS`, `USR/CRYPT.INC` | `/bin/passwd` (set-uid root) et le hachage des mots de passe |
 | `USR/PS.PAS`, `USR/KILL.PAS`, `USR/ID.PAS` | processus, signaux, identité |
 | `USR/MKDIR.PAS`, `USR/RMDIR.PAS`, `USR/RM.PAS` | répertoires et suppression |
+| `USR/INSTALL.PAS` | `/bin/install`, l'installation sur un disque dur depuis les disquettes ou le CD-ROM |
 | `BOOTSECT.ASM` / `.BIN` | secteur d'amorce FAT12/FAT16 : charge le fichier `UNIX` à 1000:0000 |
 | `MBR.ASM` / `.BIN` | secteur de partition du disque dur |
 | `BUILD.SH` | construit le compilateur, le noyau, toutes les commandes et les images de `IMAGES/` |
@@ -293,6 +294,53 @@ commande tuée par un signal. Il n'a pas `if`, `while`, `for` ni `case`.
 L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
 `/bin/shdos`.
 
+## Installation
+
+`BUILD.SH` produit aussi une distribution, comme les bandes de UNIX V7 :
+
+* `UNIX0-INST1.IMG` : disquette amorçable avec le noyau, `init`, `getty`,
+  `login`, `sh`, l'installateur et quelques commandes, plus `/mdec/mbr` et
+  `/mdec/bootsect` (secteurs d'amorce du disque dur) ; `/etc/issue` invite à
+  se connecter sous le nom `install`, dont l'interpréteur est
+  `/bin/install` ;
+* `UNIX0-INST2.IMG`, … : la racine complète en **volumes tar** (ustar)
+  écrits directement sur la disquette, sans système de fichiers ; chaque
+  volume commence par un fichier `VOLUME` (« UNIX-0 numéro total »), aucun
+  fichier n'est coupé entre deux volumes (`TOOLS/MKVOL.PY`). Il en faut
+  **3**, soit **4 disquettes de 1,44 Mo** en tout ;
+* `UNIX0-CD.ISO` : CD-ROM ISO 9660 amorçable (El Torito, `TOOLS/MKISO.PY`)
+  en **émulation de disque dur** : le BIOS présente l'image du CD comme le
+  disque 80h et le noyau la lit par l'INT 13h, sans pilote de CD-ROM ; elle
+  contient la disquette 1 et les volumes dans `/dist`. Le disque émulé n'a
+  qu'une partition, car les BIOS le dimensionnent d'après la première.
+
+`install` (`USR/INSTALL.PAS`) :
+
+1. propose les disques durs, sauf celui d'où le système a démarré (le CD
+   émulé est `hda`, la cible est alors `hdb`), et demande confirmation ;
+2. écrit la table des partitions (code de `/mdec/mbr`), alignées sur les
+   cylindres du BIOS : FAT16 d'amorce de 4 Mo, UFS1 pour la racine,
+   va-et-vient de 4 Mo (type 82h) ; le noyau relit la table
+   (`ioctl DIOCRESCAN`) et crée `/dev/hdX1` à `hdX3` ;
+3. formate la FAT16 (BPB pour le disque 80h, une grappe par secteur) et
+   crée le système UFS1 comme `newfs` : superbloc et copies, groupes de
+   cylindres de 32 Mo au plus (cartes des inodes, des fragments et des
+   grappes, résumés), tables d'inodes, racine (inode 2) ;
+4. monte la racine sur `/mnt` et l'amorce sur `/mnt/boot`, copie le noyau,
+   puis extrait les volumes : sur `/dev/fd0`, lu brut, en vidant le cache
+   du lecteur à chaque disquette (`ioctl DIOCINVAL`), ou depuis
+   `/dist/volN.tar` ; modes (bit set-uid de `passwd` compris),
+   propriétaires et dates sont appliqués ;
+5. démonte, puis propose de redémarrer.
+
+`ioctl` des disques (UNIX-0) : `DIOCGINFO` (taille, géométrie du BIOS,
+début, type de partition), `DIOCRESCAN` (relecture du MBR, aucune
+partition du disque ne doit être montée), `DIOCINVAL` (tampons écrits puis
+oubliés : changement de disquette). `TESTS/INSTALL.PY` installe le système
+sur des disques vierges depuis les disquettes (changées par le moniteur de
+QEMU) puis depuis le CD-ROM, vérifie UFS1 et FAT16 et démarre le disque
+installé.
+
 ## Carte mémoire
 
 | Adresses | Contenu |
@@ -321,6 +369,8 @@ offre aussi l'interface UNIX directe : `SysOpen`, `SysRead`, `Fork`,
 ## Limites connues
 
 * Pas de protection mémoire (8086) : un programme peut écraser le noyau.
+* L'installation n'utilise que les 1024 premiers cylindres du BIOS (adressage
+  CHS de l'INT 13h, 504 Mo au plus) ; le disque doit faire au moins 16 Mo.
 * Le va-et-vient demande une partition de type 82h : les disquettes n'en
   ont pas, et le nombre de processus simultanés y est limité par les
   640 Ko (environ 380 Ko pour les processus ; une commande pèse de 45 à

@@ -259,7 +259,7 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 		</tr>
 		<tr>
 			<td><b>KERNEL16/USR</b></td>
-			<td>Les programmes système : sh (shell UNIX), getty, login, passwd, ps, kill, id, mkdir, rmdir, rm.</td>
+			<td>Les programmes système : sh (shell UNIX), getty, login, passwd, ps, kill, id, mkdir, rmdir, rm, install (installation sur un disque dur).</td>
 		</tr>
 		<tr>
 			<td><b>KERNEL16/BOOTSECT.ASM</b></td>
@@ -298,8 +298,16 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 			<td>Vérifie la cohérence d'un système de fichiers UFS1.</td>
 		</tr>
 		<tr>
+			<td><b>TOOLS/MKVOL.PY</b></td>
+			<td>Découpe la racine du système en volumes tar de disquette (distribution).</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/MKISO.PY</b></td>
+			<td>Fabrique le CD-ROM ISO 9660 amorçable (El Torito, émulation de disque dur).</td>
+		</tr>
+		<tr>
 			<td><b>IMAGES</b></td>
-			<td>Images de disque amorçables : disquettes de 1,44 Mo et 2,88 Mo, disque dur de 36 Mo à racine UFS et zone de va-et-vient (voir IMAGES/LISEZMOI.TXT). Connexion : root (sans mot de passe) ou invite (mot de passe invite).</td>
+			<td>Images de disque amorçables : disquettes de 1,44 Mo et 2,88 Mo, disque dur de 36 Mo à racine UFS et zone de va-et-vient (voir IMAGES/LISEZMOI.TXT). Connexion : root (sans mot de passe) ou invite (mot de passe invite). Distribution : 4 disquettes d'installation (UNIX0-INST1.IMG à UNIX0-INST4.IMG) et un CD-ROM (UNIX0-CD.ISO) ; l'installateur (KERNEL16/USR/INSTALL.PAS) installe UNIX-0 sur un disque dur.</td>
 		</tr>
 </table>
 

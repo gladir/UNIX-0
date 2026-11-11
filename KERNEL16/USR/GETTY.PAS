@@ -4,8 +4,9 @@
   @abstract(Target: Unix Pascal (UPC /X))
   @description: getty de UNIX-0 (/etc/getty), lance par init sur chaque
    terminal de /etc/ttys : remet le terminal dans son etat normal (stty
-   sane), affiche la banniere et l'invite "login:", lit le nom de
-   l'utilisateur puis execute /bin/login avec ce nom.
+   sane), affiche la banniere, le contenu de /etc/issue s'il existe et
+   l'invite "login:", lit le nom de l'utilisateur puis execute /bin/login
+   avec ce nom.
    Usage : getty [vitesse]   (la vitesse de /etc/ttys est ignoree)
 }
 
@@ -22,6 +23,19 @@ Begin
  If S<>'' Then SysWrite(1,S[1],Length(S));
 End;
 
+Procedure Issue;
+{ /etc/issue, tel quel }
+Var Fd,N:Integer; B:Array[0..255]Of Char;
+Begin
+ Fd:=SysOpen('/etc/issue',O_RDONLY,0);
+ If Fd<0 Then Exit;
+ Repeat
+  N:=SysRead(Fd,B,SizeOf(B));
+  If N>0 Then SysWrite(1,B,N);
+ Until N<=0;
+ SysClose(Fd);
+End;
+
 BEGIN
  SysSignal(SIGINT,SIG_IGN); SysSignal(SIGQUIT,SIG_IGN);
  If GTty(0,Sg)=0 Then Begin
@@ -32,7 +46,9 @@ BEGIN
  End;
  SysUname(U);
  Repeat
-  Put(#10+U.SysName+' '+U.Release+' ('+U.NodeName+')'+#10#10+'login: ');
+  Put(#10+U.SysName+' '+U.Release+' ('+U.NodeName+')'+#10#10);
+  Issue;
+  Put('login: ');
   Name:='';
   Repeat
    N:=SysRead(0,C,1);
