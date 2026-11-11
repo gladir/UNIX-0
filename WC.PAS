@@ -16,6 +16,18 @@ Var
  FileName:String;
  CurrLine:String;
 
+Function DirOf(S:String):String;
+{ repertoire d'un chemin (avec son separateur final), pour ouvrir les
+  fichiers trouves par FindFirst }
+Var
+ I:Integer;
+Begin
+ I:=Length(S);
+ While(I>0)and Not(S[I]in['\','/',':'])do Dec(I);
+ DirOf:=Copy(S,1,I);
+End;
+
+
 Function WordCount(S:String):Integer;
 Var
  I,Count:Integer;
@@ -66,7 +78,7 @@ BEGIN
    FindFirst(FileName,AnyFile,Info);
    While DOSError=0 do Begin
     If Info.Attr and Directory=0 Then Begin
-     Assign(FRead,Info.Name);
+     Assign(FRead,DirOf(FileName)+Info.Name);
      Reset(FRead);
      Case Target of
       _Line:Begin

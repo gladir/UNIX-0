@@ -236,6 +236,89 @@ Par exemple, si vous voulez compiler SH.PAS, vous devrez tapez la commande suiva
 
 <pre><b>fpc</b> SH.PAS</pre>
 
+Pour compiler un programme pour le système d'exploitation UNIX-0 lui-même (appels système UNIX-0 au lieu de MS-DOS, exécutable au format COFF au lieu de MZ), utilisez le compilateur Unix Pascal du répertoire TOOLS avec l'option /X :
+
+<pre><b>upc</b> /X SH.PAS</pre>
+
+<h2>Système d'exploitation UNIX-0 (KERNEL16)</h2>
+
+Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/8088, mode réel), écrit dans un seul fichier Pascal (<b>KERNEL16/KERNEL.PAS</b>) et compilé en une seule image monolithique de plus de 64 Ko. Son interface suit celle de UNIX V7 : appels système INT 80h avec les numéros et la sémantique de V7 (fork, exec avec argc/argv sur la pile, wait, signal avec gestionnaires, alarm, stat, ioctl sgttyb, setuid, ...), utilisateurs et permissions, ordonnanceur préemptif à priorités, gestion de la mémoire par table des zones libres avec va-et-vient sur disque (swapping), systèmes de fichiers UFS1 (FreeBSD, racine du disque dur), FAT12 et FAT16, /dev, tubes, cache à écriture différée et console. Une session complète s'y ouvre : init, getty, login (/etc/passwd) et un shell UNIX (PATH, redirections, tubes, arrière-plan). Voir <a href="KERNEL16/LISEZMOI.md">KERNEL16/LISEZMOI.md</a>.
+
+<table>
+		<tr>
+			<th>Nom</th>
+			<th>Description</th>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/KERNEL.PAS</b></td>
+			<td>Le noyau UNIX-0, découpé en segments-unités (SegmentUnit).</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/INIT.PAS</b></td>
+			<td>Le processus init (/etc/init) : lit /etc/ttys et lance getty sur chaque terminal.</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/USR</b></td>
+			<td>Les programmes système : sh (shell UNIX), getty, login, passwd, ps, kill, id, mkdir, rmdir, rm, install (installation sur un disque dur).</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/BOOTSECT.ASM</b></td>
+			<td>Le secteur d'amorce FAT12/FAT16 qui charge le noyau.</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/UFSBOOT.ASM</b></td>
+			<td>L'amorce UFS1 (8 Ko dans la zone d'amorce de la partition UFS) qui charge le noyau /unix.</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/MBR.ASM</b></td>
+			<td>Le secteur de partition du disque dur.</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/BUILD.SH</b></td>
+			<td>Construit le compilateur, le noyau, toutes les commandes et les images de disque.</td>
+		</tr>
+		<tr>
+			<td><b>KERNEL16/TESTS</b></td>
+			<td>Tests sous QEMU (processus, signaux, permissions, systèmes de fichiers, session complète getty/login/sh) et dans DEVENV.</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/UPC.PAS</b></td>
+			<td>Unix Pascal : compilateur dérivé du clone de Turbo Pascal 7 (TPC.PAS de DEV-COOLS), avec les segments-unités (SegmentUnit, SegmentInterface, SegmentImplementation, SegmentEnd), l'image plate de noyau (/K) et la cible UNIX-0 (/X).</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/UNIX.PAS</b></td>
+			<td>L'unité UNIX (appels système et couche libc de la cible UNIX-0), intégrée à UPC par TOOLS/MKEMBED.PY.</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/MKIMAGE.PAS</b></td>
+			<td>Fabrique les images de disquette FAT12 et de disque dur (FAT16 + UFS).</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/COFFINFO.PY</b></td>
+			<td>Affiche et vérifie un exécutable COFF de UNIX-0 (format produit par UPC /X).</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/UFSCHK.PY</b></td>
+			<td>Vérifie la cohérence d'un système de fichiers UFS1.</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/MKVOL.PY</b></td>
+			<td>Découpe la racine du système en volumes tar de disquette (distribution).</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/MKISO.PY</b></td>
+			<td>Fabrique le CD-ROM ISO 9660 amorçable (El Torito, émulation de disque dur).</td>
+		</tr>
+		<tr>
+			<td><b>IMAGES</b></td>
+			<td>Images de disque amorçables : disquettes de 1,44 Mo et 2,88 Mo, disque dur de 20 Mo amorcé directement sur UFS (noyau /unix), avec zone de va-et-vient (voir IMAGES/LISEZMOI.TXT). Connexion : root (sans mot de passe) ou invite (mot de passe invite). Distribution : 4 disquettes d'installation (UNIX0-INST1.IMG à UNIX0-INST4.IMG) et un CD-ROM (UNIX0-CD.ISO) ; l'installateur (KERNEL16/USR/INSTALL.PAS) installe UNIX-0 sur un disque dur.</td>
+		</tr>
+</table>
+
+Pour démarrer UNIX-0 sous QEMU :
+
+<pre><b>qemu-system-i386</b> -drive file=IMAGES/UNIX0-HD.IMG,format=raw,if=ide -boot c</pre>
+
 <h2>Licence</h2>
 <ul>
  <li>Le code source est publié sous la licence <a href="https://github.com/gladir/UNIX-0/blob/main/LICENSE">MIT</a>.</li>

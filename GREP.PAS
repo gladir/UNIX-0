@@ -34,6 +34,18 @@ Var
  InitOk:Boolean;
  PTmp:Array[0..255]of Char;
 
+Function DirOf(S:String):String;
+{ repertoire d'un chemin (avec son separateur final), pour ouvrir les
+  fichiers trouves par FindFirst }
+Var
+ I:Integer;
+Begin
+ I:=Length(S);
+ While(I>0)and Not(S[I]in['\','/',':'])do Dec(I);
+ DirOf:=Copy(S,1,I);
+End;
+
+
 Function PatLength(hp1:PRegExprEntry):Integer;
 Var
  Count:Integer;
@@ -720,7 +732,7 @@ BEGIN
    While DOSError=0 do Begin
     LineNumber:=1;
     WriteLn('-------- ',Info.Name);
-    Assign(FileFind,Info.Name);
+    Assign(FileFind,DirOf(FindInFile)+Info.Name);
     Reset(FileFind);
     While Not EOF(FileFind)do Begin
      ReadLn(FileFind,CurrLine);
