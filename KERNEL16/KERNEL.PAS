@@ -1252,13 +1252,13 @@ Begin
 End;
 
 Procedure TtyIntr;
-{ ^C : SIGINT aux processus d'avant-plan (ceux qui ne lisent pas le
-  terminal et n'attendent pas un fils). }
+{ ^C : SIGINT aux processus d'avant-plan, c'est-a-dire tous sauf init et
+  ceux qui attendent la fin d'un fils (l'interpreteur de commandes). }
 Var I: Integer;
 Begin
  For I:=1 To NPROC-1 Do With Procs[I] Do
   If (Stat In [PRUN,PSLEEP]) And (Pid>1) And
-    Not ((Stat=PSLEEP) And ((Chan=CHTTY) Or (Chan=CHWAIT+I))) Then
+    Not ((Stat=PSLEEP) And ((Chan=CHWAIT+I) Or (Chan=CHVFORK+I))) Then
    PostSig(I,SIGINT);
 End;
 
@@ -1278,7 +1278,6 @@ Begin
        Echo('^'); Echo('C'); Echo(#10);
        LineLen:=0;
        TtyIntr;
-       If TtyWaiting>0 Then PutIn(#10);
       End;
   #8,#127: If LineLen>0 Then Begin
        Dec(LineLen); Echo(#8); Echo(' '); Echo(#8);
