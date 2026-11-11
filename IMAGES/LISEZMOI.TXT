@@ -26,11 +26,11 @@ UNIX0-INST1.IMG  disquette 1,44 Mo FAT12 amorcable : noyau avec le reseau
                  amorces du disque dur (/mdec/mbr, /mdec/ufsboot,
                  /mdec/bootsect).
 UNIX0-INST2.IMG  disquettes de donnees : la racine complete du systeme (les
-a INST5.IMG      deux noyaux /unix et /unixnet, 74 commandes, /etc, sources
+a INST4.IMG      deux noyaux /unix et /unixnet, 74 commandes, /etc, sources
                  dans /usr/src) en volumes tar ecrits directement sur la
                  disquette (sans systeme de fichiers), comme les bandes de
-                 distribution de UNIX V7. Il faut donc 5 disquettes de
-                 1,44 Mo en tout : 1 d'amorce et 4 de donnees (le nombre
+                 distribution de UNIX V7. Il faut donc 4 disquettes de
+                 1,44 Mo en tout : 1 d'amorce et 3 de donnees (le nombre
                  est recalcule par BUILD.SH).
 UNIX0-CD.ISO     CD-ROM ISO 9660 amorcable (El Torito, emulation de disque
                  dur) : la disquette 1 et les volumes dans /dist.
@@ -42,7 +42,7 @@ sous le nom "install", choisir le disque et le type d'installation :
   3) FAT16 seul (sans permissions UNIX)
 puis le reseau : aucun, ou une carte (NE2000 ISA ou PCI, pilote de
 paquets), avec TCP/IP par DHCP (par defaut) ou une adresse fixe, et le nom
-de la machine. Confirmer, puis inserer les disquettes 2 a 5 a la demande.
+de la machine. Confirmer, puis inserer les disquettes 2 a 4 a la demande.
 Une zone de va-et-vient de 4 Mo est toujours creee. Avec une carte, le
 noyau installe est /unixnet et /etc/netstart configure le reseau a chaque
 demarrage. Le disque doit faire au moins

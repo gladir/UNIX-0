@@ -346,7 +346,7 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
   écrits directement sur la disquette, sans système de fichiers ; chaque
   volume commence par un fichier `VOLUME` (« UNIX-0 numéro total »), aucun
   fichier n'est coupé entre deux volumes (`TOOLS/MKVOL.PAS`). Il en faut
-  **4**, soit **5 disquettes de 1,44 Mo** en tout (la racine contient les
+  **3**, soit **4 disquettes de 1,44 Mo** en tout (la racine contient les
   deux noyaux, `/unix` et `/unixnet`) ;
 * `UNIX0-CD.ISO` : CD-ROM ISO 9660 amorçable (El Torito, `TOOLS/MKISO.PAS`)
   en **émulation de disque dur** : le BIOS présente l'image du CD comme le
@@ -577,6 +577,52 @@ offre aussi l'interface UNIX directe : `SysOpen`, `SysRead`, `Fork`,
 `VFork`, `Execve`, `ArgExec`, `WaitPid`, `SysSignal`, `SysAlarm`, `GTty`,
 `SysStat`, `SetUid`, ...
 
+## Taille du code produit par UPC
+
+UPC compile en une passe, en machine à pile (valeurs dans AX ou DX:AX,
+opérandes empilés). Comme la mémoire est comptée (640 Ko pour le noyau et
+tous les processus), il privilégie la **taille** du code plutôt que la
+vitesse. Il ajoute pour cela :
+
+* **compaction du runtime** : le runtime de Turbo Pascal (5,7 Ko, recopié au
+  début de chaque segment de code) est émis en entier, puis les routines que
+  le programme n'atteint pas (d'après la passe précédente, en suivant leurs
+  appels et leurs continuations) sont retirées avant le code du programme
+  (`UPC_RTLDBG=1` affiche le découpage, `UPC_NORTL=1` garde tout) ;
+* **liens conditionnels** : `If Linked('DOS.FINDFIRST,DOS.INTR') Then ...`
+  vaut vrai si une des routines nommées est liée au programme ; la branche
+  est sinon retirée avec tout ce qu'elle appelle. La couche libc de l'unité
+  UNIX s'en sert pour ne lier FindFirst, Exec, DiskFree, GetFTime, la date
+  ou la trampoline des signaux qu'aux programmes qui les demandent (par
+  l'unité DOS, `Intr`, `MsDos` ou `SysSignal`) : un service ainsi retiré
+  répond par une erreur à une instruction `INT 21h` écrite en assembleur ;
+* **branches mortes** : un `If` dont la condition est constante ne compile
+  que la branche choisie ;
+* **conditions en sauts** : les `And`/`Or` d'une condition de `If`, `While`
+  ou `Until` deviennent des sauts (`cmp; jcc`), sans booléen intermédiaire ;
+* **Longint** : comparaison par `cmp`/`sbb` ou `xor`/`or` au lieu de cinq
+  sauts, opérations avec une constante en immédiat (`add ax,lo; adc dx,hi`) ;
+* **CASE** : `cmp; je corps` par étiquette (`cmp al,imm8` pour un sélecteur
+  d'un octet), pas de saut final dans la dernière branche sans ELSE ;
+* **variables globales** : accès par DS sans `push ds; pop es` ni préfixe
+  ES quand rien d'autre n'utilise ES ;
+* **tableaux** : borne basse repliée dans le déplacement (ou `dec ax`),
+  `shl` pour les éléments de 2 ou 4 octets ; boucles `For` à borne
+  constante comparée en immédiat ;
+* **routines** : `Exit` saute à l'épilogue au lieu de le recopier, `ret`
+  sans opérande, liens statiques lus par `[bp+d]`.
+
+| Code produit (octets) | avant | après |
+|---|---:|---:|
+| noyau `/unix` (fichier `KERNEL.SYS`) | 215 597 | 138 461 |
+| noyau `/unixnet` | 300 559 | 187 583 |
+| `init` | 35 003 | 21 005 |
+| `sh` (`KERNEL16/USR/SHELL.PAS`) | 73 174 | 53 301 |
+| `cat` | 58 778 | 40 518 |
+| code de tous les programmes du dépôt | 3 083 371 | 1 634 054 |
+
+Une commande minimale (`true`, `echo`) passe de 33 Ko à 17 Ko.
+
 ## Limites connues
 
 * Pas de protection mémoire (8086) : un programme peut écraser le noyau.
@@ -584,8 +630,8 @@ offre aussi l'interface UNIX directe : `SysOpen`, `SysRead`, `Fork`,
   CHS de l'INT 13h, 504 Mo au plus) ; le disque doit faire au moins 16 Mo.
 * Le va-et-vient demande une partition de type 82h : les disquettes n'en
   ont pas, et le nombre de processus simultanés y est limité par les
-  640 Ko (environ 380 Ko pour les processus ; une commande pèse de 45 à
-  100 Ko, dont au moins 35 pour le runtime et la libc). Les processus qui
+  640 Ko (environ 380 Ko pour les processus ; une commande pèse de 17 à
+  95 Ko avec ses données, dont environ 17 pour le runtime et la libc). Les processus qui
   se partagent la même adresse d'exécution (plusieurs `fork` du même
   programme) font des allers-retours sur le disque à chaque commutation.
 * Les commandes du dépôt restent des programmes de style DOS sous le capot
