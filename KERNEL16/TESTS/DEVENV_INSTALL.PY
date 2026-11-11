@@ -176,7 +176,7 @@ def main():
     bat = os.path.join(work, 'inst.bat')
     if MODE == 'reseau':
         # option "Reseau LAN" : pilote de paquets (INT 60h) au demarrage
-        open(os.path.join(work, 'DEVENV.CFG'), 'w').write('DosLAN=1\n')
+        open(os.path.join(work, 'DEVENV.CFG'), 'w').write('DosLAN=1\nDosWatTcp=1\n')
     if MODE == 'cd':
         lines = ['BOOT /CDROM:%s/UNIX0-CD.ISO' % work, 'IMGMOUNT D: %s' % disk]
     else:

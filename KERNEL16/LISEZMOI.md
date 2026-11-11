@@ -541,14 +541,15 @@ qemu-system-i386 -drive file=disque.img,format=raw,if=ide \
 
 (ou `-device ne2k_pci,netdev=n0`).
 
-Le pilote `pk0` suit la spécification des pilotes de paquets mais n'a pas
-pu être essayé : DEVENV, dont l'option « Réseau LAN » émule un tel pilote
-(avec « WATTCP » : passerelle NAT 192.168.200.1, sans DHCP), ne répond pas
-aux appels INT 60h d'un système amorcé — son vecteur pointe sur la
-signature « PKT DRVR » (F000:0010), que l'émulateur prend pour un
-gestionnaire installé par le programme (`Emu_IntIsHooked`) : l'appel saute
-dans ce bout de code, qui se réduit à IRET, au lieu d'atteindre
-`Emu_DoInt60`. Le noyau ne voit donc pas de carte `pk0` dans DEVENV.
+Le pilote `pk0` a été essayé dans DEVENV (option « Réseau LAN », `DosLAN=1`
+dans `DEVENV.CFG` ; « WATTCP », `DosWatTcp=1`, donne la passerelle NAT
+192.168.200.1, sans DHCP : adresse fixe, par exemple 192.168.200.50) avec
+les corrections de la branche `claude/devenv-pilote-paquets-int60` de
+DEV-COOLS : avant elles, le vecteur INT 60h perdait la signature « PKT
+DRVR » au démarrage et les appels n'atteignaient pas l'émulation, et le
+retour des appels du récepteur ne rendait pas les registres de l'appelant.
+`pk0` est alors détectée, reçoit son adresse Ethernet, résout la passerelle
+par ARP et émet sans erreur.
 
 ## Carte mémoire
 

@@ -7,9 +7,7 @@
    paquets deja present en memoire au demarrage (vecteur 60h a 80h dont le
    gestionnaire porte la signature "PKT DRVR") sert de carte reseau : par
    exemple un pilote charge par une ROM d'amorce, ou celui d'un emulateur
-   (l'option Reseau LAN de DEVENV en emule un, mais ses appels INT 60h
-   n'aboutissent pas encore depuis un systeme amorce : voir
-   KERNEL16/LISEZMOI.md).
+   (option Reseau LAN de DEVENV, passerelle NAT 192.168.200.1).
    - access_type (classe 1 : Ethernet DIX, tous les types de trames),
      get_address, set_rcv_mode (adresse propre et diffusion), send_pkt;
    - la fonction de reception (appelee par le pilote, souvent pendant une
