@@ -5200,6 +5200,13 @@ Var
  KernelOut, UnixTarget: Boolean;
    { /K image plate de noyau, /X cible UNIX-0 }
  KernelBase: Word;
+ CodeLimit: Word;
+   { Unix Pascal : taille maximale d'un segment de code. Pour les cibles
+     UNIX-0 (/X, /K), 32 Ko : aucun saut ou appel proche ne fait alors le tour
+     des 64 Ko du segment (IP+deplacement > FFFFh). Le 8086 le permet, mais
+     QEMU 8.2 (TCG) execute un tel saut a la mauvaise adresse lineaire quand
+     le segment n'est pas aligne sur 4 Ko (chainage direct des blocs
+     traduits), ce qui faisait planter les programmes de plus de 32 Ko. }
    { paragraphe de chargement de l'image plate /K }
    { Unix Pascal : le programme declare au moins un SegmentUnit }
  StringRingMask: Word;
@@ -6100,7 +6107,8 @@ Procedure Emit(B: Byte);Begin
   If Not InDeadBody Then SegTooBig:=True;
   Exit;
  End;
- If CodeSize>=MaxImage-1 Then Begin
+ If (CodeSize>=MaxImage-1) Or ((CodeSize>=CodeLimit) And Not MultiSeg) Then
+ Begin
   If AnalysisPass Or NoLimit Or AllowMulti Then Begin Overflowed:=True;
     CodeSize:=0 End
   Else Fail(48,'Segment de code trop grand');
@@ -18402,6 +18410,7 @@ BEGIN
   { Structures fixes du format TPU, verifier avant toute lecture binaire. }
  CheckLayout;
  StartTime:=ClockHundredths; TotalLines:=0; HasSegmentUnits:=False;
+ CodeLimit:=MaxImage-1;
  StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
  OptionBits:=$171D; { defauts TPC 7.0: A+ D+ E+ I+ L+ S+ V+ X+;
    B F G N O P Q R T desactives }
@@ -18416,6 +18425,7 @@ BEGIN
   SourceName:=InspectLibraryName; InspectLibrary; Halt(0)
  End;
  If InputName='' Then CLIError('Fichier source manquant');
+ If UnixTarget Or KernelOut Then CodeLimit:=32760;
  SourceName:=InputName; FSplit(SourceName,D,N,E);
  If E='' Then SourceName:=SourceName+'.PAS';
  MainSourceName:=SourceName;
@@ -18443,6 +18453,7 @@ BEGIN
      mecanisme sur de petits programmes. }
  SegCap:=MaxImage-16; SegReserve:=0; MultiSeg:=False; InDeadBody:=False;
    MainSizeEst:=0;
+ If CodeLimit<MaxImage-1 Then SegCap:=CodeLimit-16;
  FillChar(RoutSize,SizeOf(RoutSize),0);
  AllowMulti:=Overflowed And Not UnitOutput And Not HaveKernel And Not NoLimit
    And (GetEnv('UPC_NOMULTI')='');
