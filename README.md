@@ -236,7 +236,7 @@ Par exemple, si vous voulez compiler SH.PAS, vous devrez tapez la commande suiva
 
 <pre><b>fpc</b> SH.PAS</pre>
 
-Pour compiler un programme pour le système d'exploitation UNIX-0 lui-même (appels système UNIX-0 au lieu de MS-DOS), utilisez le compilateur Unix Pascal du répertoire TOOLS avec l'option /X :
+Pour compiler un programme pour le système d'exploitation UNIX-0 lui-même (appels système UNIX-0 au lieu de MS-DOS, exécutable au format COFF au lieu de MZ), utilisez le compilateur Unix Pascal du répertoire TOOLS avec l'option /X :
 
 <pre><b>upc</b> /X SH.PAS</pre>
 
@@ -284,6 +284,10 @@ Le répertoire <b>KERNEL16</b> contient un noyau UNIX 16 bits pour IBM PC (8086/
 		<tr>
 			<td><b>TOOLS/MKIMAGE.PAS</b></td>
 			<td>Fabrique les images de disquette FAT12 et de disque dur (FAT16 + UFS).</td>
+		</tr>
+		<tr>
+			<td><b>TOOLS/COFFINFO.PY</b></td>
+			<td>Affiche et vérifie un exécutable COFF de UNIX-0 (format produit par UPC /X).</td>
 		</tr>
 		<tr>
 			<td><b>TOOLS/UFSCHK.PY</b></td>

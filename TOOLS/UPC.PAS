@@ -43,8 +43,12 @@
      write, open, close, ...). La bibliotheque d'execution n'appelle plus
      MS-DOS : les services DOS utilises par le runtime et par les unites DOS
      et CRT sont traduits en appels systeme UNIX-0 par la couche "libc" de
-     l'unite UNIX, dans le processus lui-meme. L'executable produit n'a pas
-     d'extension (CAT.PAS -> CAT). Le symbole conditionnel UNIX0 est defini.
+     l'unite UNIX, dans le processus lui-meme. L'executable produit est au
+     format COFF de UNIX System V (et non MZ), sans extension (CAT.PAS ->
+     CAT) : f_magic 0153h (I286LMAGIC, 286/8086 modele large), en-tete a.out
+     OMAGIC, une section .text par segment de code, .data, .bss, .stack
+     (et .heap), relocalisations de segment R_SEG12; voir WriteCoff et
+     TOOLS/COFFINFO.PY. Le symbole conditionnel UNIX0 est defini.
 
   Le reste de ce commentaire decrit le compilateur TPC d'origine. *)
 
@@ -1382,7 +1386,7 @@ const PrinterSource: array[1..10] of string[255] = (
  ' If IOResult<>0 Then ;',
  'End.');
 { --- debut UnixSource (genere par MKEMBED.PY) --- }
-const UnixSource: array[1..1270] of string[255] = (
+const UnixSource: array[1..1269] of string[255] = (
  '{ @author: Sylvain Maltais (support@gladir.com)',
  '  @created: 2026',
  '  @website(https://www.gladir.com/unix-0)',
@@ -2407,9 +2411,8 @@ const UnixSource: array[1..1270] of string[255] = (
  ' For I:=1 To 8 Do',
  '  If SysMountInfo(I,M) Then',
  '   If (M.Dir=''/'') Or (Copy(Cwd,1,Length(M.Dir))=M.Dir) Then',
- '    If Length(M.Dir)>L Then Begin Best:=I; L:=Length(M.Dir) End;',
- ' If (Best=0) Or Not SysMountInfo(Best,M) Then Begin RAX:=$FFFF; Exit End;',
- ' T:=M.Blocks; F:=M.Free;',
+ '    If Length(M.Dir)>L Then Begin Best:=I; L:=Length(M.Dir); T:=M.Blocks; F:=M.Free End;',
+ ' If Best=0 Then Begin RAX:=$FFFF; Exit End;',
  ' If T>65535 Then Begin T:=65535 End;',
  ' If F>T Then F:=T;',
  ' RAX:=2; RCX:=512; RBX:=F; RDX:=T;',
@@ -17917,6 +17920,156 @@ Begin
    Longint(FixupCount)*SizeOf(TAddressFixup));
 End;
 
+Procedure WriteCoff(Path: TShortString; Size, StoredData, TotalData: Longint;
+  StackSeg: Word);
+{ Unix Pascal /X : executable COFF de UNIX-0 (format "common object file" de
+  UNIX System V) au lieu du format MZ de MS-DOS.
+    en-tete de fichier (20 octets) : f_magic = 0153h (I286LMAGIC, Intel
+      286/8086 modele large), f_nscns, f_timdat, f_symptr, f_nsyms,
+      f_opthdr = 28, f_flags = F_EXEC Or F_LNNO Or F_LSYMS Or F_AR16WR;
+    en-tete a.out (28 octets) : magic 0107h (OMAGIC), vstamp, tsize, dsize,
+      bsize, entry (adresse lineaire du point d'entree), text_start,
+      data_start;
+    sections (40 octets chacune) : une ".text" par segment de code (".text",
+      ".text1", ...), ".data" (donnees initialisees), ".bss" (donnees non
+      initialisees), ".stack" (pile : SS = chargement + s_vaddr/16, SP =
+      s_size) et ".heap" (tas minimal de la directive $M, facultative). s_vaddr est
+      l'adresse lineaire de la section par rapport au debut de l'image (un
+      multiple de 16 : chaque section commence un segment 8086);
+    relocalisations (10 octets) : r_vaddr, r_symndx = -1, r_type = R_SEG12
+      (011) : le mot a r_vaddr recoit le paragraphe de chargement.
+  Pas de table des symboles ni de numeros de ligne. }
+Const
+ MaxSec = MaxSegs+4;
+Type
+ TSec = Record
+  Name: String[8];
+  VAddr, Size, ScnPtr, RelPtr: Longint;
+  NReloc: Word;
+  Flags: Longint;
+ End;
+Var
+ Sec: Array[0..MaxSec-1] Of TSec;
+ NSec, K, I: Integer;
+ F: File;
+ E: Integer;
+ Pos, TSize: Longint;
+ Buf: Array[0..63] Of Byte;
+ N: Word;
+ Loc: Longint;
+ HeapParas: Longint;
+
+ Procedure AddSec(Nm: String; VA, Sz: Longint; Fl: Longint);
+ Begin
+  Sec[NSec].Name:=Nm; Sec[NSec].VAddr:=VA; Sec[NSec].Size:=Sz;
+  Sec[NSec].Flags:=Fl; Sec[NSec].ScnPtr:=0; Sec[NSec].RelPtr:=0;
+  Sec[NSec].NReloc:=0; Inc(NSec);
+ End;
+
+ Procedure PutW(O: Word; W: Word);
+ Begin Buf[O]:=Lo(W); Buf[O+1]:=Hi(W) End;
+
+ Procedure PutL(O: Word; L: Longint);
+ Begin PutW(O,Word(L And $FFFF)); PutW(O+2,Word(L Shr 16)) End;
+
+ Procedure Out(N: Word);
+ Var W: Word;
+ Begin
+  If E<>0 Then Exit;
+  {$I-} BlockWrite(F,Buf,N,W); {$I+}
+  E:=IOResult; If W<>N Then E:=1;
+ End;
+
+ Function SecOf(L: Longint): Integer;
+ Var J: Integer;
+ Begin
+  SecOf:=-1;
+  For J:=0 To NSec-1 Do
+   If (Sec[J].Flags And $80=0) And (L>=Sec[J].VAddr) And
+     (L<Sec[J].VAddr+Sec[J].Size) Then Begin SecOf:=J; Exit End;
+ End;
+
+Begin
+ NSec:=0; TSize:=0;
+ If MultiSeg Then
+  For K:=0 To SegCount-1 Do Begin
+   If K=0 Then AddSec('.text',0,CodeSize,$20)
+   Else AddSec('.text'+NumText(K),Longint(SegParas[K])*16,SegSaved[K].Size,$20);
+  End
+ Else AddSec('.text',0,CodeSize,$20);
+ For K:=0 To NSec-1 Do Inc(TSize,Sec[K].Size);
+ AddSec('.data',LinkedDataBase,StoredData,$40);
+ AddSec('.bss',LinkedDataBase+StoredData,TotalData-StoredData,$80);
+ AddSec('.stack',Longint(StackSeg)*16,StackSize,$80);
+ HeapParas:=MinHeap;
+ If HeapParas>0 Then
+  AddSec('.heap',Longint(StackSeg)*16+((Longint(StackSize)+15) Div 16)*16,
+    HeapParas*16,$80);
+ { relocalisations : nombre par section }
+ For I:=1 To RelocationCount Do Begin
+  Loc:=Longint(Relocations[I].Segm)*16+Relocations[I].Offs;
+  K:=SecOf(Loc);
+  If K<0 Then Fail(72,'Relocalisation COFF hors section');
+  Inc(Sec[K].NReloc);
+ End;
+ { disposition du fichier }
+ Pos:=20+28+Longint(NSec)*40;
+ For K:=0 To NSec-1 Do
+  If (Sec[K].Flags And $80=0) And (Sec[K].Size>0) Then Begin
+   Sec[K].ScnPtr:=Pos; Inc(Pos,Sec[K].Size);
+  End;
+ For K:=0 To NSec-1 Do If Sec[K].NReloc>0 Then Begin
+  Sec[K].RelPtr:=Pos; Inc(Pos,Longint(Sec[K].NReloc)*10);
+ End;
+ Assign(F,Path); {$I-} Rewrite(F,1); E:=IOResult; {$I+}
+ If E<>0 Then Fail(16,'Creation impossible: '+Path);
+ { en-tete de fichier }
+ FillChar(Buf,SizeOf(Buf),0);
+ PutW(0,$0153); PutW(2,NSec); PutL(4,0); PutL(8,0); PutL(12,0);
+ PutW(16,28); PutW(18,$008E);
+ Out(20);
+ { en-tete a.out }
+ FillChar(Buf,SizeOf(Buf),0);
+ PutW(0,$0107); PutW(2,0); PutL(4,TSize); PutL(8,StoredData);
+ PutL(12,TotalData-StoredData); PutL(16,0); PutL(20,0);
+ PutL(24,LinkedDataBase);
+ Out(28);
+ { en-tetes de sections }
+ For K:=0 To NSec-1 Do Begin
+  FillChar(Buf,SizeOf(Buf),0);
+  For I:=1 To Length(Sec[K].Name) Do Buf[I-1]:=Ord(Sec[K].Name[I]);
+  PutL(8,Sec[K].VAddr); PutL(12,Sec[K].VAddr); PutL(16,Sec[K].Size);
+  PutL(20,Sec[K].ScnPtr); PutL(24,Sec[K].RelPtr); PutL(28,0);
+  PutW(32,Sec[K].NReloc); PutW(34,0); PutL(36,Sec[K].Flags);
+  Out(40);
+ End;
+ { contenu des sections : l'image liee contient deja chaque section a son
+   adresse }
+ For K:=0 To NSec-1 Do
+  If Sec[K].ScnPtr<>0 Then Begin
+   Loc:=0;
+   While (E=0) And (Loc<Sec[K].Size) Do Begin
+    N:=32768; If Sec[K].Size-Loc<N Then N:=Sec[K].Size-Loc;
+    {$I-} BlockWrite(F,LinkedImage^[Sec[K].VAddr+Loc],N); {$I+}
+    E:=IOResult; Inc(Loc,N);
+   End;
+  End;
+ { relocalisations, section par section }
+ For K:=0 To NSec-1 Do
+  For I:=1 To RelocationCount Do Begin
+   Loc:=Longint(Relocations[I].Segm)*16+Relocations[I].Offs;
+   If SecOf(Loc)=K Then Begin
+    FillChar(Buf,SizeOf(Buf),0);
+    PutL(0,Loc); PutL(4,-1); PutW(8,9);
+    Out(10);
+   End;
+  End;
+ {$I-} Close(F); {$I+}
+ If IOResult<>0 Then E:=1;
+ If E<>0 Then Fail(16,'Ecriture impossible: '+Path);
+ If Size=0 Then ;
+End;
+
 Procedure WriteExecutable;
 Var
  H: Array[0..15] Of Word;
@@ -18038,6 +18191,11 @@ Begin
  If OutputDir='' Then Path:=D+Name+Ext Else Path:=JoinPath(OutputDir,
    Name+Ext);
  If Upper(Path)=Upper(SourceName) Then CLIError('Sortie identique au source');
+ If UnixTarget And Not KernelOut Then Begin
+  { Unix Pascal /X : executable COFF de UNIX-0 }
+  WriteCoff(Path,Size,StoredData,TotalData,StackSeg);
+  Dispose(LinkedImage); Exit;
+ End;
  If KernelOut Then Begin
   { Unix Pascal /K : image plate, relocalisations appliquees pour un
     chargement au paragraphe KernelBase, point d'entree a l'octet 0. Les
@@ -18174,7 +18332,7 @@ Procedure Help;Begin
  WriteLn('  -K[seg] = Image plate de noyau .SYS chargee au paragraphe seg ' +
    '(hexa, defaut 1000)');
  WriteLn('  -X = Cible UNIX-0 (appels systeme INT 80h, unite UNIX, sans ' +
-   'extension)');
+   'extension, format COFF)');
 End;
 
 Procedure ProcessArgument(S: TShortString);

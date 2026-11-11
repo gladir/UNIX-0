@@ -3681,10 +3681,35 @@ Begin
  DoVFork:=Procs[C].Pid;
 End;
 
+Const
+ { COFF (System V) : en-tete de fichier, en-tete a.out facultatif, sections }
+ COFFMAGIC=$0153;     { I286LMAGIC : Intel 286/8086, modele large (segments) }
+ COFF_F_EXEC=$0002;
+ STYP_TEXT=$20; STYP_DATA=$40; STYP_BSS=$80;
+ R_SEG12=9;           { relocalisation de segment 8086 (r_type 011) }
+ MAXCOFFSEC=40;
+
+Var
+ CoffSh: Array[0..MAXCOFFSEC*40-1] Of Byte;   { en-tetes de sections }
+
+Function CoffL(O: Word): Longint;
+Begin
+ CoffL:=MemL[Seg(CoffSh):Ofs(CoffSh)+O];
+End;
+
 Function DoExec(Path: TPath; ArgSeg, ArgOfs, ArgLen: Word): Integer;
+{ Charge un executable COFF (format natif de UNIX-0, produit par UPC /X) ou
+  MZ (programmes DOS), puis prepare le prefixe, l'environnement et la trame
+  initiale du processus courant. }
 Var
  Vn,I,N,Argc: Integer;
  H: Array[0..15] Of Word;
+ Coff: Boolean;
+ NSec,Ext: Longint;
+ CsRel,IpV,SsRel,SpV: Word;
+ HeapMin: Longint;
+ RE: Array[0..4] Of Word;
+ J: Longint;
  ImgBytes,Off,Rem: Longint;
  HdrParas,LoadParas,EnvParas,Total,Extra,MinA,MaxA: Longint;
  Mem_,Load,PSP_,EnvS,SS_,SP_: Word;
@@ -3701,15 +3726,46 @@ Begin
  If E<>0 Then Begin DoExec:=E; Exit End;
  If VNodes[Vn].Typ<>VREG Then Begin VPut(Vn); DoExec:=EACCES; Exit End;
  FillChar(H,SizeOf(H),0);
- If (VRead(Vn,0,Seg(H),Ofs(H),32)<>32) Or (H[0]<>$5A4D) Then Begin
+ If VRead(Vn,0,Seg(H),Ofs(H),32)<20 Then Begin
   VPut(Vn); DoExec:=ENOEXEC; Exit;
  End;
- If H[1]=0 Then ImgBytes:=Longint(H[2])*512 Else ImgBytes:=Longint(H[2]-1)*512+H[1];
- HdrParas:=H[4];
- ImgBytes:=ImgBytes-HdrParas*16;
- If ImgBytes<=0 Then Begin VPut(Vn); DoExec:=ENOEXEC; Exit End;
- LoadParas:=(ImgBytes+15) Div 16;
- MinA:=H[5]; MaxA:=H[6];
+ Coff:=H[0]=COFFMAGIC;
+ HeapMin:=0;
+ If Coff Then Begin
+  { en-tete COFF : f_nscns (H[1]), f_opthdr (H[8]), f_flags (H[9]) ;
+    a.out : entry a l'octet 20+16 }
+  NSec:=H[1];
+  If (H[9] And COFF_F_EXEC=0) Or (NSec<1) Or (NSec>MAXCOFFSEC) Or (H[8]<28) Then
+  Begin VPut(Vn); DoExec:=ENOEXEC; Exit End;
+  If VRead(Vn,20+H[8],Seg(CoffSh),Ofs(CoffSh),NSec*40)<>NSec*40 Then Begin
+   VPut(Vn); DoExec:=ENOEXEC; Exit;
+  End;
+  If VRead(Vn,20+16,Seg(J),Ofs(J),4)<>4 Then Begin
+   VPut(Vn); DoExec:=ENOEXEC; Exit;
+  End;
+  CsRel:=Word(J Shr 4); IpV:=Word(J And 15);
+  Ext:=0; SsRel:=$FFFF; SpV:=0;
+  For I:=0 To NSec-1 Do Begin
+   If CoffL(I*40+12)+CoffL(I*40+16)>Ext Then Ext:=CoffL(I*40+12)+CoffL(I*40+16);
+   If (CoffSh[I*40]=Ord('.')) And (CoffSh[I*40+1]=Ord('s')) And
+     (CoffSh[I*40+2]=Ord('t')) And (CoffSh[I*40+3]=Ord('a')) Then Begin
+    SsRel:=CoffL(I*40+12) Shr 4; SpV:=Word(CoffL(I*40+16));
+   End;
+   If (CoffSh[I*40]=Ord('.')) And (CoffSh[I*40+1]=Ord('h')) And
+     (CoffSh[I*40+2]=Ord('e')) Then HeapMin:=(CoffL(I*40+16)+15) Div 16;
+  End;
+  If (SsRel=$FFFF) Or (Ext>$9FFF0) Then Begin VPut(Vn); DoExec:=ENOEXEC; Exit End;
+  LoadParas:=(Ext+15) Div 16; MinA:=0; HdrParas:=0; ImgBytes:=0;
+ End Else Begin
+  If H[0]<>$5A4D Then Begin VPut(Vn); DoExec:=ENOEXEC; Exit End;
+  If H[1]=0 Then ImgBytes:=Longint(H[2])*512 Else ImgBytes:=Longint(H[2]-1)*512+H[1];
+  HdrParas:=H[4];
+  ImgBytes:=ImgBytes-HdrParas*16;
+  If ImgBytes<=0 Then Begin VPut(Vn); DoExec:=ENOEXEC; Exit End;
+  LoadParas:=(ImgBytes+15) Div 16;
+  MinA:=H[5]; MaxA:=H[6];
+  CsRel:=H[11]; IpV:=H[10]; SsRel:=H[7]; SpV:=H[8];
+ End;
  { environnement : argv et env tels quels, nom du programme, argc et argv
    (extension UNIX-0) }
  I:=0; Argc:=0;
@@ -3721,28 +3777,57 @@ Begin
  EnvParas:=(Longint(ArgLen)+Length(Path)+64) Div 16+1;
  { tas : le runtime de Unix Pascal reserve ses blocs par la libc (service
    48h), dans la zone qui suit l'image et sa pile (maxalloc = minalloc) }
- Extra:=DEFHEAP;
+ Extra:=DEFHEAP; If HeapMin>Extra Then Extra:=HeapMin;
  Total:=EnvParas+16+LoadParas+MinA+Extra;
  If Total>$A000 Then Begin VPut(Vn); DoExec:=ENOMEM; Exit End;
  Mem_:=CoreAlloc(Total);
  If Mem_=0 Then Begin VPut(Vn); DoExec:=ENOMEM; Exit End;
  ParaZero(Mem_,EnvParas+16);
  EnvS:=Mem_; PSP_:=Mem_+EnvParas; Load:=PSP_+16;
- { chargement de l'image }
- Off:=HdrParas*16; Rem:=ImgBytes; Sg:=Load;
- While Rem>0 Do Begin
-  If Rem>$4000 Then Chunk:=$4000 Else Chunk:=Rem;
-  If VRead(Vn,Off,Sg,0,Chunk)<>Chunk Then Begin
-   VPut(Vn); CoreFree(Mem_,Total); DoExec:=EIO; Exit;
+ If Coff Then Begin
+  { COFF : image (bss et pile compris) mise a zero, sections .text et .data
+    lues a load + s_vaddr, puis relocalisations R_SEG12 de chaque section }
+  ParaZero(Load,LoadParas);
+  For I:=0 To NSec-1 Do
+   If (CoffL(I*40+36) And STYP_BSS=0) And (CoffL(I*40+20)<>0) Then Begin
+    Off:=CoffL(I*40+20); Rem:=CoffL(I*40+16);
+    Sg:=Load+Word(CoffL(I*40+12) Shr 4); O:=Word(CoffL(I*40+12) And 15);
+    While Rem>0 Do Begin
+     If Rem>$4000 Then Chunk:=$4000 Else Chunk:=Rem;
+     If VRead(Vn,Off,Sg,O,Chunk)<>Chunk Then Begin
+      VPut(Vn); CoreFree(Mem_,Total); DoExec:=EIO; Exit;
+     End;
+     Inc(Off,Chunk); Dec(Rem,Chunk); Inc(Sg,Chunk Div 16);
+    End;
+   End;
+  For I:=0 To NSec-1 Do
+   For J:=0 To Longint(MemW[Seg(CoffSh):Ofs(CoffSh)+I*40+32])-1 Do Begin
+    If VRead(Vn,CoffL(I*40+24)+J*10,Seg(RE),Ofs(RE),10)<>10 Then Begin
+     VPut(Vn); CoreFree(Mem_,Total); DoExec:=ENOEXEC; Exit;
+    End;
+    Off:=Longint(RE[1]) Shl 16+RE[0];
+    If (RE[4]<>R_SEG12) Or (Off+2>Longint(LoadParas)*16) Then Begin
+     VPut(Vn); CoreFree(Mem_,Total); DoExec:=ENOEXEC; Exit;
+    End;
+    Sg:=Load+Word(Off Shr 4); O:=Word(Off And 15);
+    MemW[Sg:O]:=MemW[Sg:O]+Load;
+   End;
+ End Else Begin
+  { MZ : image apres l'en-tete, table des relocalisations }
+  Off:=HdrParas*16; Rem:=ImgBytes; Sg:=Load;
+  While Rem>0 Do Begin
+   If Rem>$4000 Then Chunk:=$4000 Else Chunk:=Rem;
+   If VRead(Vn,Off,Sg,0,Chunk)<>Chunk Then Begin
+    VPut(Vn); CoreFree(Mem_,Total); DoExec:=EIO; Exit;
+   End;
+   Inc(Off,Chunk); Dec(Rem,Chunk); Inc(Sg,Chunk Div 16);
   End;
-  Inc(Off,Chunk); Dec(Rem,Chunk); Inc(Sg,Chunk Div 16);
- End;
- { relocalisations }
- For I:=0 To H[3]-1 Do Begin
-  If VRead(Vn,H[12]+Longint(I)*4,Seg(R),Ofs(R),4)<>4 Then Begin
-   VPut(Vn); CoreFree(Mem_,Total); DoExec:=ENOEXEC; Exit;
+  For I:=0 To H[3]-1 Do Begin
+   If VRead(Vn,H[12]+Longint(I)*4,Seg(R),Ofs(R),4)<>4 Then Begin
+    VPut(Vn); CoreFree(Mem_,Total); DoExec:=ENOEXEC; Exit;
+   End;
+   MemW[Load+R[1]:R[0]]:=MemW[Load+R[1]:R[0]]+Load;
   End;
-  MemW[Load+R[1]:R[0]]:=MemW[Load+R[1]:R[0]]+Load;
  End;
  VPut(Vn);
  ParaZero(Load+LoadParas,MinA);
@@ -3794,12 +3879,12 @@ Begin
  End;
  SetDosVector(Cur);
  { trame initiale : registres, puis IP, CS, FLAGS }
- SS_:=Load+H[7]; SP_:=H[8]-24;
+ SS_:=Load+SsRel; SP_:=SpV-24;
  For K:=0 To 11 Do MemW[SS_:SP_+K*2]:=0;
  MemW[SS_:SP_+14]:=PSP_;          { ES }
  MemW[SS_:SP_+16]:=PSP_;          { DS }
- MemW[SS_:SP_+18]:=H[10];         { IP }
- MemW[SS_:SP_+20]:=Load+H[11];    { CS }
+ MemW[SS_:SP_+18]:=IpV;           { IP }
+ MemW[SS_:SP_+20]:=Load+CsRel;    { CS }
  MemW[SS_:SP_+22]:=$0202;         { FLAGS (IF) }
  CurUSS:=SS_; CurUSP:=SP_;
  Procs[Cur].USS:=SS_; Procs[Cur].USP:=SP_;

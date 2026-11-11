@@ -80,8 +80,26 @@ dans un segment DS commun de 64 Ko au plus.
   pas être déplacé, il partage l'adresse d'exécution du père et les deux
   images sont **échangées** à chaque commutation (comme le *swapping* de
   UNIX V1). `vfork` évite la copie quand le fils appelle aussitôt `exec`.
-* **exec** : chargeur d'exécutables MZ (relocalisations), préfixe de
+* **exec** : chargeur d'exécutables **COFF** (format natif de UNIX-0,
+  produit par `UPC /X`) et, pour les programmes DOS, MZ ; préfixe de
   programme compatible PSP (ligne de commande, environnement), `argc/argv`.
+
+## Format des exécutables : COFF
+
+Les commandes de UNIX-0 (`/etc/init`, `/bin/*`) sont des fichiers COFF
+(*Common Object File Format* de UNIX System V) produits par `UPC /X` :
+
+| Partie | Contenu |
+|---|---|
+| en-tête de fichier (20 octets) | `f_magic` = 0153h (I286LMAGIC : Intel 286/8086, modèle large), `f_nscns`, `f_opthdr` = 28, `f_flags` = F_EXEC, F_LNNO, F_LSYMS, F_AR16WR |
+| en-tête a.out (28 octets) | `magic` = 0107h (OMAGIC), `tsize`, `dsize`, `bsize`, `entry` (adresse linéaire du point d'entrée), `text_start`, `data_start` |
+| sections (40 octets chacune) | `.text`, `.text1`, … (un segment de code 8086 chacune), `.data`, `.bss`, `.stack` (SS = chargement + `s_vaddr`/16, SP = `s_size`), `.heap` (tas minimal de `{$M}`, facultative) |
+| relocalisations (10 octets) | `r_vaddr`, `r_symndx` = -1, `r_type` = R_SEG12 (011) : le mot à `r_vaddr` reçoit le paragraphe de chargement |
+
+`s_vaddr` est l'adresse de la section par rapport au début de l'image ; le
+noyau charge chaque section à `chargement + s_vaddr`, met à zéro `.bss` et la
+pile, puis applique les relocalisations. `TOOLS/COFFINFO.PY` affiche et
+vérifie un exécutable COFF.
 * **Systèmes de fichiers** (`KFat`, `KUfs`, `KVfs`) : **FAT12**, **FAT16**
   et **UFS1** (FreeBSD : superbloc, groupes de cylindres, inodes de 128
   octets, blocs/fragments, indirections simple et double, cartes et résumés

@@ -62,6 +62,10 @@ for f in "$W"/src/*.PAS; do
   fi
 done
 [ $fail = 0 ] || exit 1
+# les commandes UNIX-0 sont des executables COFF : verification
+python3 "$ROOT/TOOLS/COFFINFO.PY" $(cd "$W/src" && ls *.PAS | sed 's/\.PAS$//' | grep -v -x KERNEL | sed "s|^|$W/src/|") > "$W/log/coff.log" ||
+  { grep -B3 ERREUR "$W/log/coff.log"; exit 1; }
+echo "   $(grep -c f_magic "$W/log/coff.log") executables COFF verifies"
 
 # arborescence commune
 mkroot() {   # mkroot REPERTOIRE LISTE_DE_COMMANDES
