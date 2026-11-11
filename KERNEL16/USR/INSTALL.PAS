@@ -52,6 +52,7 @@ Var
  Zero: Array[0..8191] Of Byte;
  Sec: Array[0..511] Of Byte;
  MbrCode, BootCode: Array[0..511] Of Byte;
+ UfsBoot: Array[0..8191] Of Byte;     { /mdec/ufsboot, lu avant d'effacer }
  Layout: Integer;                    { 1 UFS, 2 FAT16 + UFS, 3 FAT16 }
  UfsPart, FatPart: String[1];        { numeros des partitions ('' : aucune) }
  UfsStart, UfsSize, FatStart, FatSize, SwapStart, SwapSize: Longint;
@@ -486,7 +487,7 @@ Begin
  For C:=0 To Ncg-1 Do WriteAt(Fd,(Longint(C)*Fpg+SBLKNO)*2,Big,2048);
  If Layout=1 Then Begin
   { zone d'amorce (8 premiers Ko) : UFSBOOT, qui charge /unix }
-  If LoadFile('/mdec/ufsboot',Big,8192)<>8192 Then Fatal('/mdec/ufsboot invalide');
+  Move(UfsBoot,Big,8192);
   PutL(Big,$1C,UfsStart); Big[$24]:=$80;
   WriteAt(Fd,0,Big,8192);
  End;
@@ -639,6 +640,7 @@ BEGIN
  Else WriteLn('Source : disquettes d''installation (/dev/fd0)');
  If LoadFile('/mdec/mbr',MbrCode,512)<>512 Then Fatal('/mdec/mbr invalide');
  If LoadFile('/mdec/bootsect',BootCode,512)<>512 Then Fatal('/mdec/bootsect invalide');
+ If LoadFile('/mdec/ufsboot',UfsBoot,8192)<>8192 Then Fatal('/mdec/ufsboot invalide');
  If SysStat('/UNIX',St)<0 Then Fatal('/UNIX (noyau) introuvable');
  WriteLn;
  ChooseDisk;

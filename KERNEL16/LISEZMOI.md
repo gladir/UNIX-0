@@ -394,8 +394,12 @@ monté avant que le noyau ne recense les disques), et pour démarrer le
 disque installé : `IMGMOUNT -u C`, `IMGMOUNT -u D`, `IMGMOUNT C:
 disque.img`, `BOOT C:`. Sous Linux, DEVENV veut des chemins absolus dans
 `IMGMOUNT`. `TESTS/DEVENV_INSTALL.PY` refait cette installation en pilotant
-l'interface de DEVENV (Xvfb, xdotool) et garde une capture de chaque
-étape.
+l'interface de DEVENV (Xvfb, xdotool) : il lit l'écran de l'émulateur en
+reconnaissant les caractères de sa police 8×8 pour attendre chaque question
+de l'installateur, change les disquettes dans l'Invite de commandes, démarre
+le disque installé, s'y connecte et garde une capture (PNG et texte) de
+chaque étape (`DEVENV=…/devenv python3 TESTS/DEVENV_INSTALL.PY disquettes`
+ou `cd`).
 
 ## Carte mémoire
 
