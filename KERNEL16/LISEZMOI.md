@@ -2,8 +2,8 @@
 
 Noyau UNIX pour IBM PC (8086/8088, mode réel), écrit en Pascal dans **un seul
 fichier source**, `KERNEL.PAS`, et compilé par **Unix Pascal** (`TOOLS/UPC.PAS`)
-en **une seule image monolithique** de plus de 64 Ko (environ 200 Ko : 170 Ko
-de code répartis en segments, 30 Ko de données). Son interface suit celle de
+en **une seule image monolithique** de plus de 64 Ko (environ 210 Ko : 184 Ko
+de code répartis en segments, 31 Ko de données). Son interface suit celle de
 **UNIX V7** (numéros et sémantique des appels système, signaux, `wait`,
 `stat`, terminal, utilisateurs), complétée par quelques appels de 4.2BSD.
 
@@ -11,7 +11,7 @@ de code répartis en segments, 30 Ko de données). Son interface suit celle de
 
 | Fichier | Rôle |
 |---|---|
-| `KERNEL.PAS` | le noyau (segments-unités KTypes, KLib, KMem, KSched, KDisk, KTty, KFat, KUfs, KVfs, KProc, KSys et le programme principal) |
+| `KERNEL.PAS` | le noyau (segments-unités KTypes, KLib, KMem, KSched, KDisk, KSwap, KTty, KFat, KUfs, KVfs, KProc, KSys et le programme principal) |
 | `INIT.PAS` | processus 1 (`/etc/init`) : lit `/etc/ttys`, lance `getty` sur chaque terminal et le relance, récupère les orphelins |
 | `USR/SHELL.PAS` | `/bin/sh`, l'interpréteur de commandes UNIX |
 | `USR/GETTY.PAS`, `USR/LOGIN.PAS` | `/etc/getty` et `/bin/login` : connexion avec `/etc/passwd` |
@@ -38,7 +38,8 @@ qemu-system-i386 -drive file=IMAGES/UNIX0-HD.IMG,format=raw,if=ide -boot c
 ```
 
 `RUNTESTS.SH` lance chaque programme de test comme `/etc/init` (TPROC :
-processus, signaux, exec, permissions; TFS : UFS et FAT16, liens, `core`),
+processus, signaux, exec, permissions; TFS : UFS et FAT16, liens, `core`;
+TSWAP : huit processus de 75 Ko qui ne tiennent qu'avec le va-et-vient),
 vérifie les systèmes de fichiers (`TOOLS/UFSCHK.PY`, `fsck.vfat`), puis
 `SESSION.PY` ouvre une session complète par la console série : getty, login
 (mot de passe), commandes du shell, tubes, arrière-plan, ^C, permissions,
@@ -82,8 +83,9 @@ dans un segment DS commun de 64 Ko au plus.
 ## Organisation (inspirée de UNIX V6, V7 et de xv6, MIT 6.828)
 
 * **Processus** (`KSched`, `KProc`) : table `Procs` de 16 entrées, une pile
-  noyau de 4 Ko par processus (allouée en haut de la mémoire à sa création,
-  rendue par `wait`), commutation `KSwitch` (équivalent de
+  noyau de 4 Ko par processus (réservée à l'amorce en haut de la mémoire
+  s'il y a une zone de va-et-vient, sinon allouée à la création du
+  processus et rendue par `wait`), commutation `KSwitch` (équivalent de
   `swtch`/`savu`/`retu`), `Sleep`/`Wakeup` sur des canaux, sommeils
   interruptibles par les signaux, réveils temporisés et alarmes.
 * **Ordonnanceur** : préemptif, à priorités comme V7 : le temps processeur
@@ -99,8 +101,21 @@ dans un segment DS commun de 64 Ko au plus.
   pas être déplacé, il partage l'adresse d'exécution du père et les deux
   images sont **échangées** à chaque commutation (comme le *swapping* de
   UNIX V1). `vfork` évite la copie quand le fils appelle aussitôt `exec`.
-  `break` agrandit l'image sur place quand la mémoire qui la suit est libre
-  (la libc s'en sert pour le tas).
+  `break` agrandit l'image sur place (la libc s'en sert pour le tas).
+* **Va-et-vient** (`KSwap`), comme UNIX V6/V7 : quand la mémoire manque
+  (`exec`, `fork`, `break`), des images de processus sont écrites dans la
+  zone de va-et-vient (partition de type 82h, 4 Mo sur l'image du disque
+  dur), d'abord celles des processus endormis, les plus grosses d'abord ;
+  un fils de `fork` sans mémoire libre va directement dans la zone. Une
+  image 8086 n'est pas déplaçable, mais elle n'a pas à l'être : elle revient
+  à **son adresse d'exécution**, et les processus qui occupent cette adresse
+  sont à leur tour écrits dans la zone (ou, pour deux images issues du même
+  `fork`, simplement échangées en mémoire). L'ordonnanceur ne donne le
+  processeur qu'à un processus remis en mémoire ; la mémoire d'un père de
+  `vfork` dont le fils s'exécute n'est jamais écrite, et les piles noyau,
+  qui ne sont pas déplaçables non plus, sont réservées dès l'amorce. `ps`
+  montre l'état de chaque image (L en mémoire, W dans la zone) et l'activité
+  de la zone.
 * **exec** : chargeur d'exécutables **COFF** (format natif de UNIX-0,
   produit par `UPC /X`) et, pour les programmes DOS, MZ. Comme sous V7,
   l'ancienne image est libérée avant le chargement de la nouvelle.
@@ -121,7 +136,8 @@ dans un segment DS commun de 64 Ko au plus.
 * **Disques** (`KDisk`) : BIOS INT 13h, disquettes et disques durs,
   partitions du MBR.
 
-À l'amorce, la **racine** est, comme sous UNIX, la partition UFS (type A5h,
+À l'amorce, la première partition de type 82h devient la zone de
+va-et-vient. La **racine** est, comme sous UNIX, la partition UFS (type A5h,
 A6h ou A9h) du disque d'amorce; la partition FAT16 d'amorce, qui contient le
 noyau, est montée sur `/boot`. Sur une disquette, la racine est le système
 FAT12 de la disquette (et une partition UFS éventuelle est montée sur
@@ -287,7 +303,7 @@ L'interpréteur de style DOS du dépôt (SH.PAS) reste disponible sous le nom
 | 07C00-07DFF | secteur d'amorce (BPB relu par le noyau) |
 | 08000-0FFFF | cache disque (64 tampons de 512 octets) |
 | 10000-...   | noyau : code (segments), puis données |
-| ...-9FFFF   | images des processus (en bas) et piles noyau (en haut), gérées par la coremap |
+| ...-9FFFF   | images des processus (en bas) et piles noyau (en haut), gérées par la coremap ; les images en trop sont dans la zone de va-et-vient |
 
 ## Programmes UNIX-0
 
@@ -305,12 +321,12 @@ offre aussi l'interface UNIX directe : `SysOpen`, `SysRead`, `Fork`,
 ## Limites connues
 
 * Pas de protection mémoire (8086) : un programme peut écraser le noyau.
-* **Pas de va-et-vient sur disque** : les images 8086 contiennent des
-  segments absolus et ne sont pas déplaçables ; la mémoire des processus est
-  celle qui reste des 640 Ko (environ 380 Ko). Une commande pèse de 45 à
-  100 Ko (le runtime et la libc en font au moins 35) : un tube de trois
-  commandes tient à côté du shell, mais pas toujours avec, en plus, une
-  commande en arrière-plan.
+* Le va-et-vient demande une partition de type 82h : les disquettes n'en
+  ont pas, et le nombre de processus simultanés y est limité par les
+  640 Ko (environ 380 Ko pour les processus ; une commande pèse de 45 à
+  100 Ko, dont au moins 35 pour le runtime et la libc). Les processus qui
+  se partagent la même adresse d'exécution (plusieurs `fork` du même
+  programme) font des allers-retours sur le disque à chaque commutation.
 * Les commandes du dépôt restent des programmes de style DOS sous le capot
   (options `/?`, jokers `*.*`, chemins `C:\` acceptés, NUL/CON/PRN) ; `ls`
   ne prend qu'un argument, `wc` exige une option, `grep` affiche le nom du

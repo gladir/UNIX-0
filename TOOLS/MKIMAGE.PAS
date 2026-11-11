@@ -9,12 +9,15 @@
      Disquette FAT12 (1440 Ko par defaut, ou 720, 1200, 2880) : le secteur
      d'amorce boot.bin recoit le BPB, puis l'arborescence du repertoire est
      recopiee (noms en majuscules, format 8.3).
-   MKIMAGE HD image mbr.bin boot.bin repertoire taille_FAT_Mo [ufs.img]
+   MKIMAGE HD image mbr.bin boot.bin repertoire taille_FAT_Mo [ufs.img
+           [taille_va_et_vient_Mo]]
      Disque dur (16 tetes, 63 secteurs par piste) : secteur de partition
      mbr.bin, partition 1 FAT16 active (amorcable, BOOTSECT.BIN) contenant
      l'arborescence du repertoire, puis, si ufs.img est donne, partition 2
      de type A5h (FreeBSD) contenant directement le systeme de fichiers UFS1
-     (image produite par "makefs -t ffs" ou par un newfs de FreeBSD).
+     (image produite par "makefs -t ffs" ou par un newfs de FreeBSD), et
+     enfin, si une taille est donnee, partition 3 de type 82h : la zone de
+     va-et-vient (swap) du noyau.
 }
 
 Program MKIMAGE;
@@ -361,6 +364,7 @@ Var
  UfsName: String;
  Ufs: File;
  UfsSize, UfsLBA, UfsSectors, Total, Done, Chunk: Longint;
+ SwapMB: Integer; SwapLBA, SwapSectors: Longint;
  Buf: Array[0..32767] Of Byte;
 Begin
  LoadSector(ParamStr(3),Mbr);
@@ -384,7 +388,18 @@ Begin
   UfsSectors:=(UfsSize+511) Div 512;
   UfsSectors:=UfsSectors+(16*63-(UfsLBA+UfsSectors) Mod (16*63)) Mod (16*63);
  End;
- Total:=UfsLBA+UfsSectors;
+ SwapMB:=0; SwapSectors:=0;
+ If (UfsName<>'') And (ParamCount>=8) Then Begin
+  Val(ParamStr(8),SwapMB,Code);
+  If (Code<>0) Or (SwapMB<0) Or (SwapMB>32) Then
+    Die('Taille de la zone de va-et-vient : 0 a 32 Mo');
+ End;
+ SwapLBA:=UfsLBA+UfsSectors;
+ If SwapMB>0 Then Begin
+  SwapSectors:=Longint(SwapMB)*2048;
+  SwapSectors:=SwapSectors+(16*63-(SwapLBA+SwapSectors) Mod (16*63)) Mod (16*63);
+ End;
+ Total:=SwapLBA+SwapSectors;
  Assign(Img,ParamStr(2)); Rewrite(Img,1);
  If IOResult<>0 Then Die('Creation impossible: '+ParamStr(2));
  ZeroImage(Total);
@@ -401,6 +416,11 @@ Begin
   CHS(UfsLBA+UfsSectors-1,Mbr,467);
   PutLong(Mbr,470,UfsLBA); PutLong(Mbr,474,UfsSectors);
  End;
+ If SwapSectors>0 Then Begin
+  Mbr[478]:=$00; CHS(SwapLBA,Mbr,479); Mbr[482]:=$82;
+  CHS(SwapLBA+SwapSectors-1,Mbr,483);
+  PutLong(Mbr,486,SwapLBA); PutLong(Mbr,490,SwapSectors);
+ End;
  WriteSectors(0,Mbr,1);
  FormatFat(ParamStr(5),'UNIX-0 HD  ');
  If UfsName<>'' Then Begin
@@ -414,6 +434,9 @@ Begin
   WriteLn('  UFS : partition 2 (type A5h), ',UfsSectors,' secteurs a partir ',
     'du secteur ',UfsLBA);
  End;
+ If SwapSectors>0 Then
+  WriteLn('  va-et-vient : partition 3 (type 82h), ',SwapSectors,
+    ' secteurs a partir du secteur ',SwapLBA);
  Close(Img);
 End;
 
@@ -421,7 +444,7 @@ Var Mode: String; I: Integer;
 BEGIN
  If ParamCount<4 Then Begin
   WriteLn('MKIMAGE FLOPPY image boot.bin repertoire [taille_Ko]');
-  WriteLn('MKIMAGE HD image mbr.bin boot.bin repertoire taille_FAT_Mo [ufs.img]');
+  WriteLn('MKIMAGE HD image mbr.bin boot.bin repertoire taille_FAT_Mo [ufs.img [swap_Mo]]');
   Halt(1);
  End;
  Mode:=ParamStr(1); For I:=1 To Length(Mode) Do Mode[I]:=UpCase(Mode[I]);

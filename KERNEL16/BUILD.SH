@@ -20,7 +20,8 @@
 #       IMAGES/UNIX0-HD.IMG   disque dur : partition 1 FAT16 amorcable (le
 #                             noyau, monte sur /boot) et partition 2 UFS1
 #                             (FreeBSD), racine du systeme (makefs -t ffs;
-#                             sans makefs, racine FAT16).
+#                             sans makefs, racine FAT16), partition 3 de
+#                             va-et-vient (4 Mo).
 #
 #  Usage : KERNEL16/BUILD.SH            (depuis n'importe quel repertoire)
 #  Variables : FPC (defaut fpc), NASM (defaut nasm), MAKEFS (defaut makefs),
@@ -152,7 +153,8 @@ if command -v "$MAKEFS" >/dev/null; then
   setperms "$W/ufsroot"
   $MAKEFS -t ffs -o version=1 -s 16m -f 1024 "$W/ufs.img" "$W/ufsroot" > "$W/log/makefs.log"
   rm -rf "$W/hdboot"; mkdir -p "$W/hdboot"; cp "$W/src/KERNEL.SYS" "$W/hdboot/UNIX"
-  "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hdboot" 16 "$W/ufs.img"
+  # partition 3 : zone de va-et-vient de 4 Mo (type 82h)
+  "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hdboot" 16 "$W/ufs.img" 4
 else
   echo "   (makefs absent : racine FAT16, sans partition UFS)"
   "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hd" 24

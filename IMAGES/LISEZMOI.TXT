@@ -6,11 +6,12 @@ UNIX0-144.IMG  disquette 1,44 Mo FAT12 : noyau /UNIX, /etc/init, getty,
                (sh, ls, cat, cp, mv, rm, mkdir, grep, ps, kill, passwd, ...).
 UNIX0-288.IMG  disquette 2,88 Mo FAT12 : les commandes du depot UNIX-0
                (sauf les interpreteurs de style DOS bash, csh et ksh).
-UNIX0-HD.IMG   disque dur de 32 Mo (16 tetes, 63 secteurs par piste) :
+UNIX0-HD.IMG   disque dur de 36 Mo (16 tetes, 63 secteurs par piste) :
                partition 1 FAT16 active (le noyau, montee sur /boot) et
                partition 2 de type A5h contenant un systeme de fichiers UFS1
                (FreeBSD) : la racine, avec toutes les commandes et les
-               sources du projet dans /usr/src.
+               sources du projet dans /usr/src; partition 3 de type 82h
+               (4 Mo) : la zone de va-et-vient (swap) du noyau.
 
 Demarrage sous QEMU :
 

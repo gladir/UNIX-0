@@ -1386,7 +1386,7 @@ const PrinterSource: array[1..10] of string[255] = (
  ' If IOResult<>0 Then ;',
  'End.');
 { --- debut UnixSource (genere par MKEMBED.PY) --- }
-const UnixSource: array[1..1685] of string[255] = (
+const UnixSource: array[1..1689] of string[255] = (
  '{ @author: Sylvain Maltais (support@gladir.com)',
  '  @created: 2026',
  '  @website(https://www.gladir.com/unix-0)',
@@ -1510,7 +1510,7 @@ const UnixSource: array[1..1685] of string[255] = (
  '  Pid: Integer;',
  '  PPid: Integer;',
  '  Stat: Byte;     { 1=pret, 2=en attente, 3=zombie }',
- '  Flags: Byte;',
+ '  Flags: Byte;    { 1 = processus courant, 2 = image dans la zone de va-et-vient }',
  '  Paras: Word;    { memoire en paragraphes }',
  '  Ticks: Longint; { temps processeur en tops d''horloge (18,2 par seconde) }',
  '  Name: String[15];',
@@ -1531,6 +1531,10 @@ const UnixSource: array[1..1685] of string[255] = (
  '  BufCount: Word;     { tampons du cache disque }',
  '  ProcCount: Word;    { processus actifs }',
  '  ProcMax: Word;',
+ '  SwapKB: Word;       { zone de va-et-vient (Ko, 0 = aucune) }',
+ '  SwapFreeKB: Word;',
+ '  SwapOuts: Word;     { images ecrites dans la zone depuis l''amorce }',
+ '  SwapIns: Word;      { images relues }',
  ' End;',
  ' TMountInfo=Record',
  '  FsType: Byte;       { 1=FAT12, 2=FAT16, 3=UFS, 4=dev }',

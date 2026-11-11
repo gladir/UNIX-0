@@ -6,7 +6,7 @@
 #   serie (COM1 sert aussi de clavier) : init lance getty, connexion de
 #   l'utilisateur invite (mot de passe), commandes du shell (variables, tubes,
 #   redirections, motifs, arriere-plan, &&, ||, ^C), permissions, ps, kill,
-#   passwd, puis connexion de root.
+#   passwd, va-et-vient, puis connexion de root.
 #   Usage : python3 SESSION.PY IMAGE_DISQUE_DUR   (code de sortie 0 si OK)
 import socket, subprocess, sys, time, re, os, shutil, tempfile
 
@@ -111,6 +111,9 @@ try:
     run('echo a b > /usr/interdit', r'Permission refusee')
     run('ls -l /usr | grep src', r'src')
     run('sleep 30 &', r'^\d+\n')
+    # trois commandes en tube a cote d'une commande en arriere-plan : la
+    # memoire manque, le va-et-vient prend le relais
+    run('cat /etc/passwd | grep root | wc -l; ps', r'^1\n.*va-et-vient :')
     body = run('ps', r'sleep')
     pid = re.search(r'^\s*(\d+)\s+\d+\s+100 S.*sleep', body, re.M)
     if pid:

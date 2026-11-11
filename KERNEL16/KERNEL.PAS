@@ -28,6 +28,8 @@
      le fils partage l'adresse du pere et les images sont permutees a chaque
      commutation, comme le swapping de UNIX V1), exec charge un executable
      COFF (ou MZ) avec argc/argv/envp sur la pile; break agrandit l'image;
+     va-et-vient (KSwap) : images ecrites dans une partition de type 82h
+     quand la memoire manque, et ramenees a leur adresse d'execution;
    - systemes de fichiers : UFS1 (FreeBSD, racine du disque dur), FAT12 et
      FAT16 (disquettes, partition d'amorce), /dev, tubes; montage par chemin,
      cache de secteurs a ecriture differee (sync, toutes les 30 secondes);
@@ -139,6 +141,8 @@ Type
   ChildTicks: Longint; { temps processeur des fils attendus (times) }
   ArgPtr: Longint;     { argc/argv/envp sur la pile (exec) }
   Borrowed: Boolean;   { vfork : la memoire est celle du pere }
+  Swapped: Boolean;    { image dans la zone de va-et-vient (Where = 0) }
+  SwapBlk: Longint;    { premier secteur de l'image dans cette zone }
   SysCtx: Array[0..31] Of Byte;  { contexte de l'appel systeme en cours }
   CpuTicks: Longint;   { temps processeur (tops d'horloge) }
   Fd: Array[0..NOFILE-1] Of Byte;  { 0 = libre, sinon index fichier }
@@ -569,6 +573,7 @@ Function CoreFreeTotal: Word;
 Function CoreLargest: Word;
 Function CoreGrow(Sg, Paras: Word): Boolean;
 Function CoreAllocHigh(Paras: Word): Word;
+Function CoreAllocAt(Sg, Paras: Word): Boolean;
 
 SegmentImplementation
 
@@ -663,6 +668,38 @@ Begin
   End;
 End;
 
+Function CoreAllocAt(Sg, Paras: Word): Boolean;
+{ allocation de [Sg, Sg+Paras) a cette adresse precise (retour d'une image
+  non deplacable depuis la zone de va-et-vient) : la zone doit etre libre }
+Var I,J: Integer; A,E: Word;
+Begin
+ CoreAllocAt:=False;
+ If Paras=0 Then Begin CoreAllocAt:=True; Exit End;
+ For I:=1 To MapCount Do
+  If (MapAddr[I]<=Sg) And (Longint(Sg)+Paras<=Longint(MapAddr[I])+MapSize[I]) Then Begin
+   A:=MapAddr[I]; E:=MapAddr[I]+MapSize[I];
+   If (A<Sg) And (Sg+Paras<E) Then Begin
+    { coupe en deux : une entree de plus }
+    If MapCount=NMAP Then Exit;
+    For J:=MapCount DownTo I+1 Do Begin
+     MapAddr[J+1]:=MapAddr[J]; MapSize[J+1]:=MapSize[J];
+    End;
+    Inc(MapCount);
+    MapSize[I]:=Sg-A;
+    MapAddr[I+1]:=Sg+Paras; MapSize[I+1]:=E-(Sg+Paras);
+   End Else If A<Sg Then MapSize[I]:=Sg-A
+   Else If Sg+Paras<E Then Begin
+    MapAddr[I]:=Sg+Paras; MapSize[I]:=E-(Sg+Paras);
+   End Else Begin
+    For J:=I To MapCount-1 Do Begin
+     MapAddr[J]:=MapAddr[J+1]; MapSize[J]:=MapSize[J+1];
+    End;
+    Dec(MapCount);
+   End;
+   CoreAllocAt:=True; Exit;
+  End;
+End;
+
 Function CoreGrow(Sg, Paras: Word): Boolean;
 { prend Paras paragraphes libres a partir de Sg : agrandissement sur place
   d'une image dont la fin est en Sg (break) }
@@ -702,6 +739,9 @@ Var
  BreakFlag: Boolean;           { Ctrl+Break }
  IdleHook: Pointer;            { scrutation du terminal (KTty) }
  SyncHook: Pointer;            { ecriture des tampons modifies (KDisk) }
+ ResidentHook: Pointer;        { mise en memoire d'un processus (KSwap) }
+ ResArg: Integer;              { argument et resultat de ResidentHook }
+ ResOk: Boolean;
  NextPid: Integer;
  IdleTicks: Longint;
  SwitchStamp: Longint;
@@ -716,7 +756,7 @@ Procedure NoDosStub;
 Procedure SetVector(N: Byte; Sg, Os: Word);
 Function GetVector(N: Byte): Pointer;
 Procedure SetDosVector(P: Integer);
-Procedure MakeResident(P: Integer);
+Function MakeResident(P: Integer): Boolean;
 Procedure Swtch;
 Procedure Sleep(Chan: Word);
 Function SleepIntr(Chan: Word): Boolean;
@@ -977,24 +1017,24 @@ Begin
  MemW[CurUSS:CurUSP+Off]:=W;
 End;
 
-Procedure MakeResident(P: Integer);
-{ L'image de P doit etre a son adresse d'execution (Home). Si un autre
-  processus (fork) occupe cette adresse, les deux images sont permutees. }
-Var O: Integer;
+Procedure CallResidentHook; Assembler;
+Asm
+ CALL DWORD PTR ResidentHook
+End;
+
+Function MakeResident(P: Integer): Boolean;
+{ L'image de P doit etre a son adresse d'execution (Home) avant qu'il ne
+  s'execute : echange avec un processus issu du meme fork, recopie, ou
+  retour depuis la zone de va-et-vient (KSwap.ResidentEntry). Faux si ce
+  n'est pas possible pour l'instant (memoire tenue par un vfork). }
 Begin
- With Procs[P] Do Begin
-  If (Size=0) Or (Where=Home) Then Exit;
-  For O:=0 To NPROC-1 Do
-   If (O<>P) And (Procs[O].Stat<>PFREE) And (Procs[O].Size<>0) And
-     (Procs[O].Home=Home) And (Procs[O].Where=Home) Then Begin
-    ParaXchg(Home,Where,Size);
-    Procs[O].Where:=Where; Where:=Home;
-    Exit;
-   End;
-  { personne a l'adresse : simple copie }
-  ParaCopy(Where,Home,Size);
-  CoreFree(Where,Size); Where:=Home;
- End;
+ With Procs[P] Do
+  If Borrowed Or (Size=0) Or (Where=Home) Then Begin
+   MakeResident:=True; Exit;
+  End;
+ ResArg:=P; ResOk:=False;
+ CallResidentHook;
+ MakeResident:=ResOk;
 End;
 
 Procedure CallSyncHook; Assembler;
@@ -1053,25 +1093,31 @@ Procedure Swtch;
 { Elit le processus pret de meilleure priorite (tourniquet a priorite egale)
   et lui donne le processeur. Si aucun n'est pret, attend une interruption
   (HLT). }
-Var N,I,K,Best,Pr: Integer; T: Longint;
+Var N,I,K,Best,Pr: Integer; T: Longint; Skip: Word;
 Begin
  { controle de debordement de la pile noyau (motif CCh au fond) }
  If (Cur>0) And (MemW[Procs[Cur].KStack:0]<>$CCCC) Then
   Panic('debordement de la pile noyau (pid '+IntStr(Procs[Cur].Pid)+')');
  Procs[Cur].USS:=CurUSS; Procs[Cur].USP:=CurUSP;
- RunRun:=False;
+ RunRun:=False; Skip:=0;
  Repeat
   CallIdleHook;
   CheckTimers;
   N:=-1; I:=Cur; Best:=MaxInt;
   For K:=1 To NPROC-1 Do Begin
    Inc(I); If I>=NPROC Then I:=1;
-   If Procs[I].Stat=PRUN Then Begin
+   If (Procs[I].Stat=PRUN) And (Skip And (1 Shl I)=0) Then Begin
     Pr:=Prio(I);
     If Pr<Best Then Begin Best:=Pr; N:=I End;
    End;
   End;
+  { l'elu doit etre en memoire, a son adresse (va-et-vient, fork) }
+  If (N>=0) And Not MakeResident(N) Then Begin
+   Skip:=Skip Or (1 Shl N); N:=-1;
+   If Skip<>0 Then Continue;
+  End;
   If N<0 Then Begin
+   Skip:=0;
    T:=Ticks;
    Asm
     STI
@@ -1086,7 +1132,6 @@ Begin
  If Procs[Cur].CpuRecent<1000 Then Inc(Procs[Cur].CpuRecent,Ticks-SwitchStamp);
  SwitchStamp:=Ticks;
  If N=Cur Then Exit;
- MakeResident(N);
  SwSaveP:=Cur;
  SwSave:=Ofs(Procs[Cur].KSP); SwLoad:=Ofs(Procs[N].KSP);
  Cur:=N;
@@ -1389,6 +1434,258 @@ Var I: Integer;
 Begin
  BFlush(D);
  For I:=1 To NBUF Do If BufDev[I]=D Then BufDev[I]:=$FF;
+End;
+
+SegmentEnd;
+
+{ ====================================================================== }
+SegmentUnit KSwap;
+{ Va-et-vient (swapping) comme UNIX V6/V7 : quand la memoire manque, des
+  images de processus sont ecrites dans la zone de va-et-vient (partition
+  de type 82h) et liberees. Une image 8086 contient des adresses de
+  segments absolues : elle n'est pas deplacable, mais elle revient a son
+  adresse d'execution (Home), apres que les processus qui l'occupent ont ete
+  ecrits a leur tour dans la zone. Les piles noyau sont reservees a
+  l'amorce (jamais dans une zone a liberer); la memoire d'un pere de vfork
+  dont le fils s'execute n'est jamais ecrite. }
+Uses KTypes,KLib,KMem,KSched,KDisk;
+SegmentInterface
+
+Const
+ NSWAPMAP=32;
+
+Var
+ SwapDisk: Integer;               { index dans Disks, -1 = pas de zone }
+ SwapSize: Longint;               { secteurs }
+ SwapOuts, SwapIns: Longint;      { statistiques (ps) }
+
+Procedure SwapInit(D: Integer);
+Function SwapFreeSectors: Longint;
+Function Locked(Q: Integer): Boolean;
+Function SwapOut(Q: Integer): Boolean;
+Function SwapImage(P: Integer; Sg: Word): Boolean;
+Procedure SwapRelease(P: Integer);
+Function Reclaim(Paras: Word; Except: Integer): Boolean;
+Function ClaimRange(Sg, Paras: Word; Except: Integer): Boolean;
+Procedure ResidentEntry;
+
+SegmentImplementation
+
+Var
+ SMapAddr, SMapSize: Array[1..NSWAPMAP] Of Longint;
+ SMapCount: Integer;
+ SwapBuf: Array[0..511] Of Byte;
+
+Procedure SwapInit(D: Integer);
+Begin
+ SwapDisk:=D; SwapSize:=Disks[D].Sectors;
+ SMapCount:=1; SMapAddr[1]:=0; SMapSize[1]:=SwapSize;
+End;
+
+Function SwapFreeSectors: Longint;
+Var I: Integer; T: Longint;
+Begin
+ T:=0;
+ For I:=1 To SMapCount Do Inc(T,SMapSize[I]);
+ SwapFreeSectors:=T;
+End;
+
+Function SAlloc(N: Longint): Longint;
+{ N secteurs consecutifs de la zone (premier ajustement), -1 si plein }
+Var I,J: Integer;
+Begin
+ SAlloc:=-1;
+ For I:=1 To SMapCount Do
+  If SMapSize[I]>=N Then Begin
+   SAlloc:=SMapAddr[I];
+   Inc(SMapAddr[I],N); Dec(SMapSize[I],N);
+   If SMapSize[I]=0 Then Begin
+    For J:=I To SMapCount-1 Do Begin
+     SMapAddr[J]:=SMapAddr[J+1]; SMapSize[J]:=SMapSize[J+1];
+    End;
+    Dec(SMapCount);
+   End;
+   Exit;
+  End;
+End;
+
+Procedure SFree(A, N: Longint);
+Var I,J: Integer;
+Begin
+ If N<=0 Then Exit;
+ I:=1;
+ While (I<=SMapCount) And (SMapAddr[I]<A) Do Inc(I);
+ If (I>1) And (SMapAddr[I-1]+SMapSize[I-1]=A) Then Begin
+  Inc(SMapSize[I-1],N);
+  If (I<=SMapCount) And (A+N=SMapAddr[I]) Then Begin
+   Inc(SMapSize[I-1],SMapSize[I]);
+   For J:=I To SMapCount-1 Do Begin
+    SMapAddr[J]:=SMapAddr[J+1]; SMapSize[J]:=SMapSize[J+1];
+   End;
+   Dec(SMapCount);
+  End;
+  Exit;
+ End;
+ If (I<=SMapCount) And (A+N=SMapAddr[I]) Then Begin
+  SMapAddr[I]:=A; Inc(SMapSize[I],N); Exit;
+ End;
+ If SMapCount=NSWAPMAP Then Begin KPrintLn('carte du va-et-vient pleine'); Exit End;
+ For J:=SMapCount DownTo I Do Begin
+  SMapAddr[J+1]:=SMapAddr[J]; SMapSize[J+1]:=SMapSize[J];
+ End;
+ SMapAddr[I]:=A; SMapSize[I]:=N; Inc(SMapCount);
+End;
+
+Function Sectors(Paras: Word): Longint;
+Begin
+ Sectors:=(Longint(Paras)+31) Div 32;
+End;
+
+Function SwapIO(Blk: Longint; Sg, Paras: Word; Wr: Boolean): Boolean;
+{ transfert de Paras paragraphes entre Sg:0 et la zone (secteur Blk); le
+  dernier secteur, incomplet, passe par SwapBuf pour ne rien ecrire au-dela
+  de l'image en memoire }
+Var I,N: Longint; Rest: Word;
+Begin
+ SwapIO:=False;
+ N:=Paras Div 32; Rest:=(Paras Mod 32)*16;
+ I:=0;
+ While I<N Do Begin
+  If Not DiskIO(SwapDisk,Blk+I,Sg+Word(I)*32,0,Wr) Then Exit;
+  Inc(I);
+ End;
+ If Rest>0 Then Begin
+  If Wr Then Begin
+   FillChar(SwapBuf,SizeOf(SwapBuf),0);
+   FarMove(Sg+Word(N)*32,0,Seg(SwapBuf),Ofs(SwapBuf),Rest);
+   If Not DiskIO(SwapDisk,Blk+N,Seg(SwapBuf),Ofs(SwapBuf),True) Then Exit;
+  End Else Begin
+   If Not DiskIO(SwapDisk,Blk+N,Seg(SwapBuf),Ofs(SwapBuf),False) Then Exit;
+   FarMove(Seg(SwapBuf),Ofs(SwapBuf),Sg+Word(N)*32,0,Rest);
+  End;
+ End;
+ SwapIO:=True;
+End;
+
+Function Locked(Q: Integer): Boolean;
+{ la memoire de Q est utilisee par un fils de vfork (qui s'execute dedans) }
+Var I: Integer;
+Begin
+ Locked:=False;
+ For I:=1 To NPROC-1 Do
+  If (I<>Q) And (Procs[I].Stat<>PFREE) And Procs[I].Borrowed And
+    (Procs[I].Home=Procs[Q].Home) Then Locked:=True;
+End;
+
+Function SwapImage(P: Integer; Sg: Word): Boolean;
+{ ecrit Procs[P].Size paragraphes depuis Sg comme image de P dans la zone }
+Var B: Longint;
+Begin
+ SwapImage:=False;
+ If SwapDisk<0 Then Exit;
+ B:=SAlloc(Sectors(Procs[P].Size));
+ If B<0 Then Exit;
+ If Not SwapIO(B,Sg,Procs[P].Size,True) Then Begin
+  SFree(B,Sectors(Procs[P].Size)); Exit;
+ End;
+ Procs[P].SwapBlk:=B; Procs[P].Swapped:=True; Procs[P].Where:=0;
+ Inc(SwapOuts);
+ SwapImage:=True;
+End;
+
+Function SwapOut(Q: Integer): Boolean;
+{ image de Q (en memoire : a son adresse ou copie de fork) vers la zone }
+Var W: Word;
+Begin
+ SwapOut:=False;
+ With Procs[Q] Do Begin
+  If (Stat=PFREE) Or (Size=0) Or (Where=0) Or Borrowed Or Swapped Then Exit;
+  If Locked(Q) Then Exit;
+  W:=Where;
+  If Not SwapImage(Q,W) Then Exit;
+  CoreFree(W,Size);
+ End;
+ SwapOut:=True;
+End;
+
+Procedure SwapRelease(P: Integer);
+{ abandon de l'image de P dans la zone }
+Begin
+ With Procs[P] Do If Swapped Then Begin
+  SFree(SwapBlk,Sectors(Size)); Swapped:=False;
+ End;
+End;
+
+Function Overlaps(Q: Integer; Sg, Paras: Word): Boolean;
+Begin
+ With Procs[Q] Do
+  Overlaps:=(Stat<>PFREE) And (Size<>0) And (Where<>0) And Not Borrowed And
+    (Longint(Where)<Longint(Sg)+Paras) And (Longint(Sg)<Longint(Where)+Size);
+End;
+
+Function ClaimRange(Sg, Paras: Word; Except: Integer): Boolean;
+{ libere [Sg, Sg+Paras) en ecrivant ses occupants dans la zone, puis
+  l'alloue }
+Var Q: Integer;
+Begin
+ ClaimRange:=False;
+ For Q:=1 To NPROC-1 Do
+  If (Q<>Except) And Overlaps(Q,Sg,Paras) Then
+   If Not SwapOut(Q) Then Exit;
+ ClaimRange:=CoreAllocAt(Sg,Paras);
+End;
+
+Function Reclaim(Paras: Word; Except: Integer): Boolean;
+{ ecrit des processus dans la zone jusqu'a ce qu'un bloc de Paras
+  paragraphes soit libre : d'abord ceux qui dorment, les plus gros d'abord
+  (le processus courant et Except sont epargnes) }
+Var Q,V: Integer; Best: Longint;
+Begin
+ While CoreLargest<Paras Do Begin
+  V:=0; Best:=-1;
+  For Q:=1 To NPROC-1 Do
+   With Procs[Q] Do
+    If (Q<>Cur) And (Q<>Except) And (Stat In [PRUN,PSLEEP]) And (Size<>0) And
+      (Where<>0) And Not Borrowed And Not Locked(Q) Then
+     If Longint(Size)+Ord(Stat=PSLEEP)*65536>Best Then Begin
+      Best:=Longint(Size)+Ord(Stat=PSLEEP)*65536; V:=Q;
+     End;
+  If (V=0) Or Not SwapOut(V) Then Begin Reclaim:=False; Exit End;
+ End;
+ Reclaim:=True;
+End;
+
+Procedure ResidentEntry;
+{ ResidentHook : met Procs[ResArg] a son adresse d'execution; ResOk }
+Var P,O: Integer;
+Begin
+ P:=ResArg; ResOk:=False;
+ With Procs[P] Do Begin
+  { copie de fork en memoire et image soeur a l'adresse : echange }
+  If (Where<>0) And Not Swapped Then
+   For O:=1 To NPROC-1 Do
+    If (O<>P) And (Procs[O].Stat<>PFREE) And (Procs[O].Size=Size) And
+      Not Procs[O].Borrowed And (Procs[O].Home=Home) And
+      (Procs[O].Where=Home) And Not Locked(O) Then Begin
+     ParaXchg(Home,Where,Size);
+     Procs[O].Where:=Where; Where:=Home;
+     ResOk:=True; Exit;
+    End;
+  { sinon : l'adresse est liberee (occupants vers la zone), puis copie ou
+    lecture de la zone }
+  If Not ClaimRange(Home,Size,P) Then Exit;
+  If Swapped Then Begin
+   If Not SwapIO(SwapBlk,Home,Size,False) Then
+    Panic('lecture de la zone de va-et-vient impossible');
+   SFree(SwapBlk,Sectors(Size)); Swapped:=False;
+   Inc(SwapIns);
+  End Else Begin
+   ParaCopy(Where,Home,Size);
+   CoreFree(Where,Size);
+  End;
+  Where:=Home;
+ End;
+ ResOk:=True;
 End;
 
 SegmentEnd;
@@ -3755,7 +4052,7 @@ SegmentEnd;
 SegmentUnit KProc;
 { Processus : chargement des executables MZ (exec), fork, exit, wait,
   signaux, liberation de la memoire. }
-Uses KTypes,KLib,KMem,KSched,KVfs;
+Uses KTypes,KLib,KMem,KSched,KVfs,KSwap;
 SegmentInterface
 
 Var
@@ -3829,10 +4126,15 @@ Begin
    Exit;
   End;
   If Size=0 Then Exit;
-  If Where<>Home Then CoreFree(Where,Size)
+  If Swapped Then SwapRelease(P)
+  Else If Where<>Home Then CoreFree(Where,Size)
   Else Begin
+   { une image soeur (fork) reprend l'adresse depuis sa copie en memoire;
+     si elle est dans la zone de va-et-vient, elle y reviendra a sa
+     prochaine execution }
    For O:=1 To NPROC-1 Do
     If (O<>P) And (Procs[O].Stat<>PFREE) And (Procs[O].Size<>0) And
+      Not Procs[O].Borrowed And Not Procs[O].Swapped And
       (Procs[O].Home=Home) Then Begin
      ParaCopy(Procs[O].Where,Home,Size);
      CoreFree(Procs[O].Where,Size);
@@ -3855,15 +4157,17 @@ Begin
 End;
 
 Function DoFork: Integer;
-Var C,I: Integer; A,FS: Word; K: Word;
+Var C,I: Integer; A,FS: Word; K: Word; SAX,SFL: Word; Ok: Boolean;
 Begin
  C:=NewProc;
  If C<0 Then Begin DoFork:=-EAGAIN; Exit End;
  If Procs[Cur].Size=0 Then Begin DoFork:=-EINVAL; Exit End;
  If Not GetKStack(C) Then Begin DoFork:=-EAGAIN; Exit End;
  A:=CoreAlloc(Procs[Cur].Size);
- If A=0 Then Begin DoFork:=-ENOMEM; Exit End;
- ParaCopy(Procs[Cur].Home,A,Procs[Cur].Size);
+ If (A=0) And (SwapDisk<0) Then Begin DoFork:=-ENOMEM; Exit End;
+ { sans memoire libre, la copie du fils va directement dans la zone de
+   va-et-vient (comme UNIX V7) }
+ If A<>0 Then ParaCopy(Procs[Cur].Home,A,Procs[Cur].Size);
  K:=Procs[C].KStack;
  Procs[C]:=Procs[Cur];
  With Procs[C] Do Begin
@@ -3875,10 +4179,24 @@ Begin
   Intr:=False; Alarm:=0;
   USS:=CurUSS; USP:=CurUSP;
   For I:=0 To NOFILE-1 Do If Fd[I]<>0 Then FRef(Fd[I]);
-  { trame du fils (dans sa copie) : AX = 0, CF = 0 }
-  FS:=A+(CurUSS-Procs[Cur].Home);
-  MemW[FS:CurUSP]:=0;
-  MemW[FS:CurUSP+22]:=MemW[FS:CurUSP+22] And $FFFE;
+  If A<>0 Then Begin
+   { trame du fils (dans sa copie) : AX = 0, CF = 0 }
+   FS:=A+(CurUSS-Procs[Cur].Home);
+   MemW[FS:CurUSP]:=0;
+   MemW[FS:CurUSP+22]:=MemW[FS:CurUSP+22] And $FFFE;
+  End;
+ End;
+ If A=0 Then Begin
+  { trame du fils modifiee le temps d'ecrire l'image dans la zone }
+  SAX:=MemW[CurUSS:CurUSP]; SFL:=MemW[CurUSS:CurUSP+22];
+  MemW[CurUSS:CurUSP]:=0; MemW[CurUSS:CurUSP+22]:=SFL And $FFFE;
+  Ok:=SwapImage(C,Procs[Cur].Home);
+  MemW[CurUSS:CurUSP]:=SAX; MemW[CurUSS:CurUSP+22]:=SFL;
+  If Not Ok Then Begin
+   For I:=0 To NOFILE-1 Do If Procs[C].Fd[I]<>0 Then FClose(Procs[C].Fd[I]);
+   Procs[C].Stat:=PFREE; Procs[C].Size:=0; Procs[C].Pid:=0;
+   DoFork:=-ENOMEM; Exit;
+  End;
  End;
  SetupKStack(C);
  Procs[C].Stat:=PRUN;
@@ -4073,6 +4391,9 @@ Begin
   ReleaseMemory(Cur); Lost:=True;
  End;
  Mem_:=CoreAlloc(Total);
+ { memoire insuffisante : d'autres processus vont dans la zone de
+   va-et-vient }
+ If (Mem_=0) And Reclaim(Total,-1) Then Mem_:=CoreAlloc(Total);
  If Mem_=0 Then Begin VPut(Vn); If Lost Then DoExit(SIGKILL); DoExec:=ENOMEM; Exit End;
  ParaZero(Mem_,EnvParas+16);
  EnvS:=Mem_; PSP_:=Mem_+EnvParas; Load:=PSP_+16;
@@ -4248,7 +4569,9 @@ Begin
      DoWait:=Procs[I].Pid;
      Inc(Procs[Cur].ChildTicks,Procs[I].CpuTicks+Procs[I].ChildTicks);
      Procs[I].Stat:=PFREE; Procs[I].Pid:=0;
-     CoreFree(Procs[I].KStack,KSTKPARAS); Procs[I].KStack:=0;
+     If SwapDisk<0 Then Begin
+      CoreFree(Procs[I].KStack,KSTKPARAS); Procs[I].KStack:=0;
+     End;
      Exit;
     End;
    End;
@@ -4330,7 +4653,7 @@ SegmentEnd;
 { ====================================================================== }
 SegmentUnit KSys;
 { Appels systeme (INT 80h) : lecture de la trame, aiguillage, retour. }
-Uses KTypes,KLib,KMem,KSched,KDisk,KTty,KVfs,KProc;
+Uses KTypes,KLib,KMem,KSched,KDisk,KSwap,KTty,KVfs,KProc;
 SegmentInterface
 
 Procedure KSysInit;
@@ -4722,7 +5045,7 @@ Begin
   MemW[C.RDS:C.RDX]:=Pid; MemW[C.RDS:C.RDX+2]:=PPid;
   If Stat=PRUN Then Mem[C.RDS:C.RDX+4]:=1 Else If Stat=PSLEEP Then
     Mem[C.RDS:C.RDX+4]:=2 Else Mem[C.RDS:C.RDX+4]:=3;
-  Mem[C.RDS:C.RDX+5]:=Ord(P=Cur);
+  Mem[C.RDS:C.RDX+5]:=Ord(P=Cur) Or (Ord(Swapped) Shl 1);
   MemW[C.RDS:C.RDX+6]:=Size;
   MemL[C.RDS:C.RDX+8]:=CpuTicks;
   PutPStr(C.RDS,C.RDX+12,Name,15);
@@ -4782,9 +5105,12 @@ Begin
   Fin:=Home+Size; C.Ret:=Fin;
   If C.RBX=0 Then Exit;
   If C.RBX>Fin Then Begin
-   If Shared(Cur) Or Not CoreGrow(Fin,C.RBX-Fin) Then Begin
-    SysBreak:=ENOMEM; Exit;
-   End;
+   If Shared(Cur) Then Begin SysBreak:=ENOMEM; Exit End;
+   { la memoire qui suit l'image est liberee au besoin par le va-et-vient }
+   If Not CoreGrow(Fin,C.RBX-Fin) Then
+    If (SwapDisk<0) Or Not ClaimRange(Fin,C.RBX-Fin,Cur) Then Begin
+     SysBreak:=ENOMEM; Exit;
+    End;
   End Else Begin
    If C.RBX<PSP+16 Then Begin SysBreak:=EINVAL; Exit End;
    If Shared(Cur) Then Begin SysBreak:=ENOMEM; Exit End;
@@ -4991,6 +5317,11 @@ Begin
        F:=0; For I:=1 To NPROC-1 Do If Procs[I].Stat<>PFREE Then Inc(F);
        MemW[C.RDS:C.RDX+8]:=F;
        MemW[C.RDS:C.RDX+10]:=NPROC-1;
+       MemW[C.RDS:C.RDX+12]:=SwapSize Div 2;          { Ko }
+       If SwapDisk>=0 Then MemW[C.RDS:C.RDX+14]:=SwapFreeSectors Div 2
+       Else MemW[C.RDS:C.RDX+14]:=0;
+       MemW[C.RDS:C.RDX+16]:=Word(SwapOuts);
+       MemW[C.RDS:C.RDX+18]:=Word(SwapIns);
       End;
   203: E:=SysMountInfo;
   204: Procs[Cur].SigTramp:=Longint(C.RCX) Shl 16+C.RBX;
@@ -5203,9 +5534,23 @@ BEGIN
  Cur:=0; NextPid:=1;
  KPrintLn('memoire libre : '+IntStr(Longint(CoreFreeTotal)*16 Div 1024)+' Ko');
  { disques }
+ SwapDisk:=-1;
  DiskInit;
  ProbeDisks;
  ShowDisks;
+ { va-et-vient : premiere partition de type 82h. Les piles noyau sont
+   alors reservees des maintenant, en haut de la memoire : une image qui
+   revient de la zone doit pouvoir retrouver son adresse, et une pile noyau
+   n'est pas deplacable. }
+ ResidentHook:=@ResidentEntry;
+ For I:=0 To DiskCount-1 Do
+  If (SwapDisk<0) And (Disks[I].PartType=$82) Then SwapInit(I);
+ If SwapDisk>=0 Then Begin
+  KPrintLn('va-et-vient : /dev/'+Disks[SwapDisk].Name+' ('+
+    IntStr(SwapSize Div 2048)+' Mo)');
+  For I:=1 To NPROC-1 Do
+   If Not GetKStack(I) Then Panic('pas de memoire pour les piles noyau');
+ End;
  { vecteurs d'interruption }
  SysHook:=@SysDispatch; PreemptHook:=@PreemptEntry; FaultHook:=@FaultEntry;
  KSysInit; TtyInit;
