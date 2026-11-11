@@ -58,7 +58,7 @@ Const
  PIPESIZE=512;
  NDISK=8;           { peripheriques disques connus }
  BUFBASE=$0800;      { segment du cache disque (08000h-0FFFFh) }
- KSTKPARAS=192;     { pile noyau : 3 Ko par processus }
+ KSTKPARAS=256;     { pile noyau : 4 Ko par processus }
  KSTKTOP=KSTKPARAS*16;
  QUANTUM=3;         { tops d'horloge par tranche de temps }
  DEFHEAP=1024;      { tas par defaut d'un programme (paragraphes, 16 Ko) }
@@ -99,6 +99,7 @@ Const
 Type
  TPath=String[127];
  TName=String[63];
+ T83=String[11];    { nom FAT 8.3 sur 11 caracteres }
 
  TProc=Record
   Stat: Byte;          { PFREE, PRUN, PSLEEP, PZOMB }
@@ -117,7 +118,8 @@ Type
   Status: Word;        { code de sortie (octet bas) et signal (octet haut) }
   SigPend, SigIgn: Word;
   Borrowed: Boolean;   { vfork : la memoire est celle du pere }
-  Ticks: Longint;
+  SysCtx: Array[0..31] Of Byte;  { contexte de l'appel systeme en cours }
+  CpuTicks: Longint;   { temps processeur (tops d'horloge) }
   Fd: Array[0..NOFILE-1] Of Byte;  { 0 = libre, sinon index fichier }
   Cwd: TPath;
   Name: String[15];
@@ -199,6 +201,7 @@ Var
  BootStart: Longint;
  SysHook, PreemptHook, FaultHook: Pointer;
  ZeroBuf: Array[0..511] Of Byte;
+ SysCtxOfs, SysCtxLen: Word;   { contexte de l'appel systeme (KSys) }
 
 SegmentImplementation
 SegmentEnd;
@@ -575,6 +578,7 @@ SegmentInterface
 
 Var
  SwSave, SwLoad: Word;         { decalages (DS) des contextes KSP/KSS }
+ SwSaveP: Integer;
  Quantum: Integer;
  RunRun: Boolean;              { une commutation est demandee }
  SchedOn: Boolean;             { preemption active }
@@ -583,6 +587,7 @@ Var
  IdleHook: Pointer;            { scrutation du terminal (KTty) }
  NextPid: Integer;
  IdleTicks: Longint;
+ SwitchStamp: Longint;
 
 Procedure KSwitch;
 Procedure ForkRet;
@@ -918,13 +923,21 @@ Begin
   End;
  Until N>=0;
  Quantum:=QUANTUM;
+ { temps processeur du processus sortant }
+ Inc(Procs[Cur].CpuTicks,Ticks-SwitchStamp); SwitchStamp:=Ticks;
  If N=Cur Then Exit;
  MakeResident(N);
+ SwSaveP:=Cur;
  SwSave:=Ofs(Procs[Cur].KSP); SwLoad:=Ofs(Procs[N].KSP);
  Cur:=N;
  CurUSS:=Procs[N].USS; CurUSP:=Procs[N].USP; CurKStack:=Procs[N].KStack;
  SetDosVector(N);
+ If SysCtxLen<>0 Then
+  FarMove(DSeg,SysCtxOfs,DSeg,Ofs(Procs[SwSaveP].SysCtx),SysCtxLen);
  KSwitch;
+ { de retour dans ce processus : son contexte d'appel systeme }
+ If SysCtxLen<>0 Then
+  FarMove(DSeg,Ofs(Procs[Cur].SysCtx),DSeg,SysCtxOfs,SysCtxLen);
 End;
 
 Procedure Sleep(Chan: Word);
@@ -1640,8 +1653,8 @@ Begin
  DirSector:=True;
 End;
 
-Function To83(Name: TName; Var R: String): Boolean;
-Var I,P: Integer; B,E: String;
+Function To83(Name: TName; Var R: T83): Boolean;
+Var I,P: Integer; B,E: TName;
 Begin
  To83:=False;
  If (Name='') Or (Name='.') Or (Name='..') Then Begin
@@ -1664,7 +1677,7 @@ Begin
 End;
 
 Function From83(Sg, Os: Word): TName;
-Var B,E: String; I: Integer;
+Var B,E: TName; I: Integer;
 Begin
  B:=''; E:='';
  For I:=0 To 7 Do B:=B+Chr(Mem[Sg:Os+I]);
@@ -1693,7 +1706,7 @@ Begin
  If A And 1<>0 Then V.Mode:=V.Mode And Not $92;
 End;
 
-Function Search(Var Dir: TVNode; N83: String; Var LBA: Longint;
+Function Search(Var Dir: TVNode; Var N83: T83; Var LBA: Longint;
   Var Idx: Word): Boolean;
 Var I: Longint; B: Integer; S,O: Word; K: Integer; Ok: Boolean; A: Byte;
 Begin
@@ -1716,7 +1729,7 @@ Begin
 End;
 
 Function FatLookup(Var Dir: TVNode; Name: TName; Var V: TVNode): Integer;
-Var N83: String; LBA,C: Longint; Idx: Word; B: Integer;
+Var N83: T83; LBA,C: Longint; Idx: Word; B: Integer;
 Begin
  If Not To83(Name,N83) Then Begin FatLookup:=ENOENT; Exit End;
  If Not Search(Dir,N83,LBA,Idx) Then Begin FatLookup:=ENOENT; Exit End;
@@ -1882,7 +1895,7 @@ Begin
  End;
 End;
 
-Procedure PutEntry(S, O: Word; N83: String; Attr: Byte; First: Longint);
+Procedure PutEntry(S, O: Word; N83: T83; Attr: Byte; First: Longint);
 Var I: Integer; T: Longint;
 Begin
  FarFill(S,O,32,0);
@@ -1897,7 +1910,7 @@ End;
 
 Function FatCreate(Var Dir: TVNode; Name: TName; IsDir: Boolean;
   Var V: TVNode): Integer;
-Var N83: String; LBA,C: Longint; Idx: Word; B: Integer; S: Word;
+Var N83: T83; LBA,C: Longint; Idx: Word; B: Integer; S: Word;
 Begin
  If Mounts[Dir.Mnt].RO Then Begin FatCreate:=EROFS; Exit End;
  If Not To83(Name,N83) Or (Name='.') Or (Name='..') Then Begin
@@ -1934,7 +1947,7 @@ Begin
 End;
 
 Function FatRemove(Var Dir: TVNode; Name: TName; IsDir: Boolean): Integer;
-Var N83: String; LBA: Longint; Idx: Word; B: Integer; V: TVNode;
+Var N83: T83; LBA: Longint; Idx: Word; B: Integer; V: TVNode;
 Begin
  If Mounts[Dir.Mnt].RO Then Begin FatRemove:=EROFS; Exit End;
  If (Name='.') Or (Name='..') Then Begin FatRemove:=EINVAL; Exit End;
@@ -1956,7 +1969,7 @@ End;
 
 Function FatRename(Var D1: TVNode; N1: TName; Var D2: TVNode;
   N2: TName): Integer;
-Var A,B83: String; L1,L2: Longint; I1,I2: Word; B,E: Integer;
+Var A,B83: T83; L1,L2: Longint; I1,I2: Word; B,E: Integer;
   Raw: Array[0..31] Of Byte; V: TVNode;
 Begin
  If Mounts[D1.Mnt].RO Then Begin FatRename:=EROFS; Exit End;
@@ -2644,16 +2657,22 @@ Begin
  End;
 End;
 
-Function Find(Var Dir: TVNode; Name: TName; Var Ino: Longint): Boolean;
+Function FindName(Var Dir: TVNode; Var Name: TName; Var Ino: Longint): Boolean;
+{ cherche Name dans Dir; Name recoit le nom tel qu'il est enregistre }
 Var Pos,I: Longint; N: TName; T: Byte; U: TName;
 Begin
- Find:=False; Pos:=0;
+ FindName:=False; Pos:=0;
  While UfsReadDir(Dir,Pos,N,I,T) Do
-  If N=Name Then Begin Ino:=I; Find:=True; Exit End;
+  If N=Name Then Begin Ino:=I; FindName:=True; Exit End;
  { noms DOS (majuscules) : comparaison sans tenir compte de la casse }
  U:=UpStr(Name); Pos:=0;
  While UfsReadDir(Dir,Pos,N,I,T) Do
-  If UpStr(N)=U Then Begin Ino:=I; Find:=True; Exit End;
+  If UpStr(N)=U Then Begin Ino:=I; Name:=N; FindName:=True; Exit End;
+End;
+
+Function Find(Var Dir: TVNode; Name: TName; Var Ino: Longint): Boolean;
+Begin
+ Find:=FindName(Dir,Name,Ino);
 End;
 
 Function UfsLookup(Var Dir: TVNode; Name: TName; Var V: TVNode): Integer;
@@ -2816,7 +2835,7 @@ Var Ino: Longint; V: TVNode; E: Integer;
 Begin
  If Mounts[Dir.Mnt].RO Then Begin UfsRemove:=EROFS; Exit End;
  If (Name='.') Or (Name='..') Then Begin UfsRemove:=EINVAL; Exit End;
- If Not Find(Dir,Name,Ino) Then Begin UfsRemove:=ENOENT; Exit End;
+ If Not FindName(Dir,Name,Ino) Then Begin UfsRemove:=ENOENT; Exit End;
  E:=UfsIGet(Dir.Mnt,Ino,V);
  If E<>0 Then Begin UfsRemove:=E; Exit End;
  If IsDir And (V.Typ<>VDIR) Then Begin UfsRemove:=ENOTDIR; Exit End;
@@ -2853,7 +2872,7 @@ Function UfsRename(Var D1: TVNode; N1: TName; Var D2: TVNode;
 Var Ino,X: Longint; V: TVNode; E: Integer;
 Begin
  If Mounts[D1.Mnt].RO Then Begin UfsRename:=EROFS; Exit End;
- If Not Find(D1,N1,Ino) Then Begin UfsRename:=ENOENT; Exit End;
+ If Not FindName(D1,N1,Ino) Then Begin UfsRename:=ENOENT; Exit End;
  E:=UfsIGet(D1.Mnt,Ino,V);
  If E<>0 Then Begin UfsRename:=E; Exit End;
  If Find(D2,N2,X) Then Begin
@@ -2901,8 +2920,8 @@ Function NormPath(Base: TPath; Path: String): TPath;
 Function VGet(Var T: TVNode): Integer;
 Procedure VPut(I: Integer);
 Procedure VRef(I: Integer);
-Function Namei(Path: String; Var Vn: Integer): Integer;
-Function NameiParent(Path: String; Var Dir: Integer; Var Last: TName): Integer;
+Function Namei(Path: TPath; Var Vn: Integer): Integer;
+Function NameiParent(Path: TPath; Var Dir: Integer; Var Last: TName): Integer;
 Function VRead(Vn: Integer; Off: Longint; Sg, Os, N: Word): Integer;
 Function VWrite(Vn: Integer; Off: Longint; Sg, Os, N: Word): Integer;
 Function VTrunc(Vn: Integer): Integer;
@@ -2914,8 +2933,8 @@ Function VRemove(Dir: Integer; Name: TName; IsDir: Boolean): Integer;
 Function VRename(D1: Integer; N1: TName; D2: Integer; N2: TName): Integer;
 Function VLink(Dir: Integer; Name: TName; Vn: Integer): Integer;
 Function VChmod(Vn: Integer; Mode: Word): Integer;
-Function DoMount(Special, Dir: String; FsType: Word): Integer;
-Function DoUmount(Dir: String): Integer;
+Function DoMount(Special, Dir: TPath; FsType: Word): Integer;
+Function DoUmount(Dir: TPath): Integer;
 Function MountFree(M: Integer): Longint;
 Function IsMountDir(P: TPath): Boolean;
 Function FAlloc(Vn: Integer; Flags: Word): Integer;
@@ -2932,7 +2951,7 @@ Var
 
 Function NormPath(Base: TPath; Path: String): TPath;
 { chemin absolu sans ".", ".." ni "/" doubles }
-Var R: String; C: String; I,J: Integer;
+Var R: String; C: TName; I,J: Integer;
 Begin
  If (Path='') Or (Path[1]<>'/') Then Path:=Base+'/'+Path;
  R:=''; I:=1;
@@ -3218,7 +3237,7 @@ Begin
  End;
 End;
 
-Function Namei(Path: String; Var Vn: Integer): Integer;
+Function Namei(Path: TPath; Var Vn: Integer): Integer;
 Var P,Rest: TPath; M,V,I,E: Integer; C: TName; T: TVNode;
 Begin
  Vn:=0;
@@ -3244,7 +3263,7 @@ Begin
  Vn:=V; Namei:=0;
 End;
 
-Function NameiParent(Path: String; Var Dir: Integer; Var Last: TName): Integer;
+Function NameiParent(Path: TPath; Var Dir: Integer; Var Last: TName): Integer;
 Var P: TPath; I,E: Integer;
 Begin
  Dir:=0;
@@ -3375,7 +3394,7 @@ Begin
  End;
 End;
 
-Function DoMount(Special, Dir: String; FsType: Word): Integer;
+Function DoMount(Special, Dir: TPath; FsType: Word): Integer;
 Var M,D,V,E,I: Integer; P: TPath; T: TVNode; S: TName;
 Begin
  P:=NormPath('/',Dir);
@@ -3419,7 +3438,7 @@ Begin
  DoMount:=0;
 End;
 
-Function DoUmount(Dir: String): Integer;
+Function DoUmount(Dir: TPath): Integer;
 Var M,I: Integer; P: TPath;
 Begin
  P:=NormPath('/',Dir);
@@ -3448,13 +3467,12 @@ SegmentInterface
 
 Var
  KArgs: Array[0..2047] Of Char;   { arguments et environnement d'exec }
- SwitchStamp: Longint;
 
 Function NewProc: Integer;
 Procedure ReleaseMemory(P: Integer);
 Function DoFork: Integer;
 Function DoVFork: Integer;
-Function DoExec(Path: String; ArgSeg, ArgOfs, ArgLen: Word): Integer;
+Function DoExec(Path: TPath; ArgSeg, ArgOfs, ArgLen: Word): Integer;
 Procedure DoExit(Status: Word);
 Function DoWait(Pid: Integer; Options: Word; Var Status: Word): Integer;
 Procedure CheckSignals;
@@ -3540,7 +3558,7 @@ Begin
   Inc(NextPid); If NextPid>30000 Then NextPid:=2;
   While FindPid(NextPid)>=0 Do Inc(NextPid);
   Pid:=NextPid; PPid:=Procs[Cur].Pid;
-  Where:=A; Ticks:=0; SigPend:=0; Chan:=0; Wake:=0; Intr:=False;
+  Where:=A; CpuTicks:=0; SigPend:=0; Chan:=0; Wake:=0; Intr:=False;
   USS:=CurUSS; USP:=CurUSP;
   For I:=0 To NOFILE-1 Do If Fd[I]<>0 Then FRef(Fd[I]);
   { trame du fils (dans sa copie) : AX = 0, CF = 0 }
@@ -3577,7 +3595,7 @@ Begin
   Inc(NextPid); If NextPid>30000 Then NextPid:=2;
   While FindPid(NextPid)>=0 Do Inc(NextPid);
   Pid:=NextPid; PPid:=Procs[Cur].Pid;
-  Ticks:=0; SigPend:=0; Chan:=0; Wake:=0; Intr:=False;
+  CpuTicks:=0; SigPend:=0; Chan:=0; Wake:=0; Intr:=False;
   USS:=CurUSS; USP:=CurUSP;
   For I:=0 To NOFILE-1 Do If Fd[I]<>0 Then FRef(Fd[I]);
  End;
@@ -3593,7 +3611,7 @@ Begin
  DoVFork:=Procs[C].Pid;
 End;
 
-Function DoExec(Path: String; ArgSeg, ArgOfs, ArgLen: Word): Integer;
+Function DoExec(Path: TPath; ArgSeg, ArgOfs, ArgLen: Word): Integer;
 Var
  Vn,I,N,Argc: Integer;
  H: Array[0..15] Of Word;
@@ -3602,7 +3620,7 @@ Var
  Mem_,Load,PSP_,EnvS,SS_,SP_: Word;
  R: Array[0..1] Of Word;
  Chunk,Sg,O,K,EnvLen,EnvStart,EnvEnd,TailLen: Word;
- Name: String;
+ Name: TPath;
  E: Integer;
 Begin
  { arguments recopies dans le noyau avant de liberer l'ancienne image }
@@ -3754,7 +3772,7 @@ Begin
     If Procs[I].Stat=PZOMB Then Begin
      Status:=Procs[I].Status;
      DoWait:=Procs[I].Pid;
-     Inc(Procs[Cur].Ticks,Procs[I].Ticks);
+     Inc(Procs[Cur].CpuTicks,Procs[I].CpuTicks);
      Procs[I].Stat:=PFREE; Procs[I].Pid:=0;
      Exit;
     End;
@@ -3786,18 +3804,31 @@ SegmentUnit KSys;
 Uses KTypes,KLib,KMem,KSched,KDisk,KTty,KVfs,KProc;
 SegmentInterface
 
+Procedure KSysInit;
 Procedure SysDispatch;
 Procedure PreemptEntry;
 Procedure FaultEntry;
 
 SegmentImplementation
 
-Var
- RAX,RBX,RCX,RDX,RSI,RDI,RDS,RES: Word;
- Ret,Ret2: Longint;
- SetDX: Boolean;
+Type
+ TSysCtx=Record
+  RAX,RBX,RCX,RDX,RSI,RDI,RDS,RES: Word;
+  Ret,Ret2: Longint;
+  SetDX: Boolean;
+ End;
 
-Function UStr(Sg, Os: Word): String;
+Var
+ { registres de l'appel en cours : sauvegardes avec le processus par Swtch
+   (un appel systeme peut s'endormir pendant qu'un autre s'execute) }
+ C: TSysCtx;
+
+Procedure KSysInit;
+Begin
+ SysCtxOfs:=Ofs(C); SysCtxLen:=SizeOf(C);
+End;
+
+Function UStr(Sg, Os: Word): TPath;
 Begin
  UStr:=FarStr(Sg,Os,127);
 End;
@@ -3823,27 +3854,27 @@ End;
 Function SysRead: Integer;
 Var F,N: Integer;
 Begin
- SysRead:=GetFile(RBX,F);
+ SysRead:=GetFile(C.RBX,F);
  If F=0 Then Exit;
  If Files[F].Flags And O_ACCMODE=O_WRONLY Then Begin SysRead:=EBADF; Exit End;
- N:=VRead(Files[F].Vn,Files[F].Off,RDS,RDX,RCX);
+ N:=VRead(Files[F].Vn,Files[F].Off,C.RDS,C.RDX,C.RCX);
  If N<0 Then Begin SysRead:=-N; Exit End;
- Inc(Files[F].Off,N); Ret:=N; SysRead:=0;
+ Inc(Files[F].Off,N); C.Ret:=N; SysRead:=0;
 End;
 
 Function SysWrite: Integer;
 Var F,N: Integer;
 Begin
- SysWrite:=GetFile(RBX,F);
+ SysWrite:=GetFile(C.RBX,F);
  If F=0 Then Exit;
  If Files[F].Flags And O_ACCMODE=O_RDONLY Then Begin SysWrite:=EBADF; Exit End;
  If Files[F].Flags And O_APPEND<>0 Then Files[F].Off:=VNodes[Files[F].Vn].Size;
- N:=VWrite(Files[F].Vn,Files[F].Off,RDS,RDX,RCX);
+ N:=VWrite(Files[F].Vn,Files[F].Off,C.RDS,C.RDX,C.RCX);
  If N<0 Then Begin SysWrite:=-N; Exit End;
- Inc(Files[F].Off,N); Ret:=N; SysWrite:=0;
+ Inc(Files[F].Off,N); C.Ret:=N; SysWrite:=0;
 End;
 
-Function SysOpen(Path: String; Flags: Word): Integer;
+Function SysOpen(Path: TPath; Flags: Word): Integer;
 Var E,Vn,D,F,Fd: Integer; Last: TName;
 Begin
  E:=Namei(Path,Vn);
@@ -3869,15 +3900,15 @@ Begin
  If F=0 Then Begin VPut(Vn); SysOpen:=ENFILE; Exit End;
  Fd:=NewFd(F);
  If Fd<0 Then Begin FClose(F); SysOpen:=EMFILE; Exit End;
- Ret:=Fd; SysOpen:=0;
+ C.Ret:=Fd; SysOpen:=0;
 End;
 
 Function SysClose: Integer;
 Var F: Integer;
 Begin
- SysClose:=GetFile(RBX,F);
+ SysClose:=GetFile(C.RBX,F);
  If F=0 Then Exit;
- Procs[Cur].Fd[RBX]:=0; FClose(F);
+ Procs[Cur].Fd[C.RBX]:=0; FClose(F);
 End;
 
 Procedure FillStat(Vn: Integer; Sg, Os: Word);
@@ -3898,7 +3929,7 @@ Function SysGetDents: Integer;
 Var F,Vn: Integer; Pos,Save,Ino: Longint; Name: TName; Typ: Byte;
   Done,RecLen: Word; I: Integer;
 Begin
- SysGetDents:=GetFile(RBX,F);
+ SysGetDents:=GetFile(C.RBX,F);
  If F=0 Then Exit;
  Vn:=Files[F].Vn;
  If VNodes[Vn].Typ<>VDIR Then Begin SysGetDents:=ENOTDIR; Exit End;
@@ -3907,47 +3938,47 @@ Begin
   Save:=Pos;
   If Not VReadDir(Vn,Pos,Name,Ino,Typ) Then Break;
   RecLen:=(8+Length(Name)+1+1) And $FFFE;
-  If Done+RecLen>RCX Then Begin
+  If Done+RecLen>C.RCX Then Begin
    Pos:=Save;
    If Done=0 Then Begin SysGetDents:=EINVAL; Exit End;
    Break;
   End;
-  MemL[RDS:RDX+Done]:=Ino;
-  MemW[RDS:RDX+Done+4]:=RecLen;
-  Mem[RDS:RDX+Done+6]:=Typ;
-  Mem[RDS:RDX+Done+7]:=Length(Name);
-  For I:=1 To Length(Name) Do Mem[RDS:RDX+Done+7+I]:=Ord(Name[I]);
-  Mem[RDS:RDX+Done+8+Length(Name)]:=0;
+  MemL[C.RDS:C.RDX+Done]:=Ino;
+  MemW[C.RDS:C.RDX+Done+4]:=RecLen;
+  Mem[C.RDS:C.RDX+Done+6]:=Typ;
+  Mem[C.RDS:C.RDX+Done+7]:=Length(Name);
+  For I:=1 To Length(Name) Do Mem[C.RDS:C.RDX+Done+7+I]:=Ord(Name[I]);
+  Mem[C.RDS:C.RDX+Done+8+Length(Name)]:=0;
   Inc(Done,RecLen);
  Until False;
  Files[F].Off:=Pos;
- Ret:=Done;
+ C.Ret:=Done;
 End;
 
 Function SysLSeek: Integer;
 Var F: Integer; O: Longint;
 Begin
- SysLSeek:=GetFile(RBX,F);
+ SysLSeek:=GetFile(C.RBX,F);
  If F=0 Then Exit;
  If VNodes[Files[F].Vn].Typ In [VFIFO,VCHR] Then
   If (VNodes[Files[F].Vn].Typ=VFIFO) Or (VNodes[Files[F].Vn].Minor<DEVDISK) Then
   Begin SysLSeek:=ESPIPE; Exit End;
- O:=Longint(RCX) Shl 16+RDX;
- Case RSI Of
+ O:=Longint(C.RCX) Shl 16+C.RDX;
+ Case C.RSI Of
   0: ;
   1: O:=O+Files[F].Off;
   2: O:=O+VNodes[Files[F].Vn].Size;
   Else Begin SysLSeek:=EINVAL; Exit End;
  End;
  If O<0 Then Begin SysLSeek:=EINVAL; Exit End;
- Files[F].Off:=O; Ret:=O; SetDX:=True;
+ Files[F].Off:=O; C.Ret:=O; C.SetDX:=True;
 End;
 
 Function SysPathOp(Op: Integer): Integer;
 { unlink (10), mkdir (39), rmdir (40), chdir (12), chmod (15) }
-Var E,D,Vn: Integer; Last: TName; P: String;
+Var E,D,Vn: Integer; Last: TName; P: TPath;
 Begin
- P:=UStr(RDS,RDX);
+ P:=UStr(C.RDS,C.RDX);
  Case Op Of
   10,39,40: Begin
    E:=NameiParent(P,D,Last);
@@ -3970,16 +4001,16 @@ Begin
   End;
   15: Begin
    E:=Namei(P,Vn);
-   If E=0 Then Begin E:=VChmod(Vn,RCX); VPut(Vn) End;
+   If E=0 Then Begin E:=VChmod(Vn,C.RCX); VPut(Vn) End;
   End;
  End;
  SysPathOp:=E;
 End;
 
 Function SysRename(Link: Boolean): Integer;
-Var E,D1,D2,Vn: Integer; L1,L2: TName; P1,P2: String;
+Var E,D1,D2,Vn: Integer; L1,L2: TName; P1,P2: TPath;
 Begin
- P1:=UStr(RDS,RDX); P2:=UStr(RES,RDI);
+ P1:=UStr(C.RDS,C.RDX); P2:=UStr(C.RES,C.RDI);
  E:=NameiParent(P2,D2,L2);
  If E<>0 Then Begin SysRename:=E; Exit End;
  If Link Then Begin
@@ -3997,29 +4028,29 @@ Function SysKill: Integer;
 Var I,P,N: Integer;
 Begin
  SysKill:=0; N:=0;
- If Integer(RBX)=-1 Then Begin
+ If Integer(C.RBX)=-1 Then Begin
   For I:=1 To NPROC-1 Do
    If (Procs[I].Stat In [PRUN,PSLEEP]) And (Procs[I].Pid>1) And (I<>Cur) Then
-   Begin PostSig(I,RCX); Inc(N) End;
+   Begin PostSig(I,C.RCX); Inc(N) End;
   If N=0 Then SysKill:=ESRCH;
   Exit;
  End;
- P:=FindPid(RBX);
+ P:=FindPid(C.RBX);
  If (P<0) Or (Procs[P].Stat=PZOMB) Then Begin SysKill:=ESRCH; Exit End;
- If RCX<>0 Then PostSig(P,RCX);
+ If C.RCX<>0 Then PostSig(P,C.RCX);
 End;
 
 Function SysIoctl: Integer;
 Var F: Integer; IsTty: Boolean;
 Begin
- SysIoctl:=GetFile(RBX,F);
+ SysIoctl:=GetFile(C.RBX,F);
  If F=0 Then Exit;
  IsTty:=(VNodes[Files[F].Vn].Typ=VCHR) And (VNodes[Files[F].Vn].Minor=DEVTTY);
- Case RCX Of
-  0: If IsTty Then Ret:=1 Else Ret:=0;
-  1: If IsTty Then Ret:=TtyMode Else SysIoctl:=ENOTTY;
-  2: If IsTty Then TtyMode:=RDX And 3 Else SysIoctl:=ENOTTY;
-  3: If IsTty Then Ret:=TtyAvail Else SysIoctl:=ENOTTY;
+ Case C.RCX Of
+  0: If IsTty Then C.Ret:=1 Else C.Ret:=0;
+  1: If IsTty Then C.Ret:=TtyMode Else SysIoctl:=ENOTTY;
+  2: If IsTty Then TtyMode:=C.RDX And 3 Else SysIoctl:=ENOTTY;
+  3: If IsTty Then C.Ret:=TtyAvail Else SysIoctl:=ENOTTY;
   Else SysIoctl:=EINVAL;
  End;
 End;
@@ -4035,89 +4066,89 @@ Function SysProcInfo: Integer;
 Var P: Integer;
 Begin
  SysProcInfo:=0;
- If RBX>=NPROC Then Begin SysProcInfo:=EINVAL; Exit End;
- P:=RBX; Ret:=0;
+ If C.RBX>=NPROC Then Begin SysProcInfo:=EINVAL; Exit End;
+ P:=C.RBX; C.Ret:=0;
  If (P=0) Or (Procs[P].Stat=PFREE) Then Exit;
  With Procs[P] Do Begin
-  MemW[RDS:RDX]:=Pid; MemW[RDS:RDX+2]:=PPid;
-  If Stat=PRUN Then Mem[RDS:RDX+4]:=1 Else If Stat=PSLEEP Then
-    Mem[RDS:RDX+4]:=2 Else Mem[RDS:RDX+4]:=3;
-  Mem[RDS:RDX+5]:=Ord(P=Cur);
-  MemW[RDS:RDX+6]:=Size;
-  MemL[RDS:RDX+8]:=Ticks;
-  PutPStr(RDS,RDX+12,Name,15);
+  MemW[C.RDS:C.RDX]:=Pid; MemW[C.RDS:C.RDX+2]:=PPid;
+  If Stat=PRUN Then Mem[C.RDS:C.RDX+4]:=1 Else If Stat=PSLEEP Then
+    Mem[C.RDS:C.RDX+4]:=2 Else Mem[C.RDS:C.RDX+4]:=3;
+  Mem[C.RDS:C.RDX+5]:=Ord(P=Cur);
+  MemW[C.RDS:C.RDX+6]:=Size;
+  MemL[C.RDS:C.RDX+8]:=CpuTicks;
+  PutPStr(C.RDS,C.RDX+12,Name,15);
  End;
- Ret:=1;
+ C.Ret:=1;
 End;
 
 Function SysMountInfo: Integer;
 Var M: Integer;
 Begin
- SysMountInfo:=0; Ret:=0;
- If (RBX<1) Or (RBX>NMOUNT) Then Begin SysMountInfo:=EINVAL; Exit End;
- M:=RBX;
+ SysMountInfo:=0; C.Ret:=0;
+ If (C.RBX<1) Or (C.RBX>NMOUNT) Then Begin SysMountInfo:=EINVAL; Exit End;
+ M:=C.RBX;
  If Not Mounts[M].Used Then Exit;
- FarFill(RDS,RDX,64,0);
+ FarFill(C.RDS,C.RDX,64,0);
  With Mounts[M] Do Begin
-  Case Typ Of FSFAT12: Mem[RDS:RDX]:=1; FSFAT16: Mem[RDS:RDX]:=2;
-   FSUFS: Mem[RDS:RDX]:=3; Else Mem[RDS:RDX]:=4; End;
-  Mem[RDS:RDX+1]:=Drive; Mem[RDS:RDX+2]:=Ord(RO);
-  MemL[RDS:RDX+4]:=Start;
-  MemL[RDS:RDX+8]:=Sectors Div 2;
-  MemL[RDS:RDX+12]:=MountFree(M);
-  PutPStr(RDS,RDX+16,Dir,31);
-  PutPStr(RDS,RDX+48,Special,15);
+  Case Typ Of FSFAT12: Mem[C.RDS:C.RDX]:=1; FSFAT16: Mem[C.RDS:C.RDX]:=2;
+   FSUFS: Mem[C.RDS:C.RDX]:=3; Else Mem[C.RDS:C.RDX]:=4; End;
+  Mem[C.RDS:C.RDX+1]:=Drive; Mem[C.RDS:C.RDX+2]:=Ord(RO);
+  MemL[C.RDS:C.RDX+4]:=Start;
+  MemL[C.RDS:C.RDX+8]:=Sectors Div 2;
+  MemL[C.RDS:C.RDX+12]:=MountFree(M);
+  PutPStr(C.RDS,C.RDX+16,Dir,31);
+  PutPStr(C.RDS,C.RDX+48,Special,15);
  End;
- Ret:=1;
+ C.Ret:=1;
 End;
 
 Procedure SysDispatch;
-Var E,F,Fd,R,W,I: Integer; St: Word; P: String; Vn: Integer;
+Var E,F,Fd,R,W,I: Integer; St: Word; P: TPath; Vn: Integer;
 Begin
- RAX:=UserW(0); RBX:=UserW(2); RCX:=UserW(4); RDX:=UserW(6);
- RSI:=UserW(8); RDI:=UserW(10); RES:=UserW(14); RDS:=UserW(16);
- E:=0; Ret:=0; Ret2:=0; SetDX:=False;
- Case RAX Of
-  1: DoExit(RBX);
-  2: Begin Ret:=DoFork; If Ret<0 Then Begin E:=-Ret; Ret:=0 End End;
-  190: Begin Ret:=DoVFork; If Ret<0 Then Begin E:=-Ret; Ret:=0 End End;
+ C.RAX:=UserW(0); C.RBX:=UserW(2); C.RCX:=UserW(4); C.RDX:=UserW(6);
+ C.RSI:=UserW(8); C.RDI:=UserW(10); C.RES:=UserW(14); C.RDS:=UserW(16);
+ E:=0; C.Ret:=0; C.Ret2:=0; C.SetDX:=False;
+ Case C.RAX Of
+  1: DoExit(C.RBX);
+  2: Begin C.Ret:=DoFork; If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End End;
+  190: Begin C.Ret:=DoVFork; If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End End;
   3: E:=SysRead;
   4: E:=SysWrite;
-  5: E:=SysOpen(UStr(RDS,RDX),RBX);
+  5: E:=SysOpen(UStr(C.RDS,C.RDX),C.RBX);
   6: E:=SysClose;
   7: Begin
-      Ret:=DoWait(Integer(RBX),RCX,St);
-      If Ret<0 Then Begin E:=-Ret; Ret:=0 End
-      Else Begin Ret2:=St; SetDX:=True; Ret:=Ret And $FFFF End;
+      C.Ret:=DoWait(Integer(C.RBX),C.RCX,St);
+      If C.Ret<0 Then Begin E:=-C.Ret; C.Ret:=0 End
+      Else Begin C.Ret2:=St; C.SetDX:=True; C.Ret:=C.Ret And $FFFF End;
      End;
-  8: E:=SysOpen(UStr(RDS,RDX),O_WRONLY Or O_CREAT Or O_TRUNC);
+  8: E:=SysOpen(UStr(C.RDS,C.RDX),O_WRONLY Or O_CREAT Or O_TRUNC);
   9: E:=SysRename(True);
-  10,12,15,39,40: E:=SysPathOp(RAX);
+  10,12,15,39,40: E:=SysPathOp(C.RAX);
   11: Begin
-       If RCX=0 Then RCX:=SizeOf(KArgs)-2;
-       E:=DoExec(UStr(RDS,RDX),RES,RDI,RCX);
+       If C.RCX=0 Then C.RCX:=SizeOf(KArgs)-2;
+       E:=DoExec(UStr(C.RDS,C.RDX),C.RES,C.RDI,C.RCX);
       End;
-  13: Begin Ret:=KTime; SetDX:=True End;
+  13: Begin C.Ret:=KTime; C.SetDX:=True End;
   19: E:=SysLSeek;
-  20: Ret:=Procs[Cur].Pid;
+  20: C.Ret:=Procs[Cur].Pid;
   21: Begin
-       E:=Namei(UStr(RES,RDI),Vn);
+       E:=Namei(UStr(C.RES,C.RDI),Vn);
        If E=0 Then Begin
         If VNodes[Vn].Typ<>VDIR Then E:=ENOTDIR;
         VPut(Vn);
        End;
-       If E=0 Then E:=DoMount(UStr(RDS,RDX),UStr(RES,RDI),RBX);
+       If E=0 Then E:=DoMount(UStr(C.RDS,C.RDX),UStr(C.RES,C.RDI),C.RBX);
       End;
-  22: E:=DoUmount(UStr(RDS,RDX));
-  24: Ret:=0;
+  22: E:=DoUmount(UStr(C.RDS,C.RDX));
+  24: C.Ret:=0;
   29: If Not SleepIntr(CHPAUSE+Cur) Then E:=EINTR;
-  36: Ret:=0;
+  36: C.Ret:=0;
   37: E:=SysKill;
   38: E:=SysRename(False);
   41: Begin
-       E:=GetFile(RBX,F);
+       E:=GetFile(C.RBX,F);
        If F<>0 Then Begin
-        Fd:=NewFd(F); If Fd<0 Then E:=EMFILE Else Begin FRef(F); Ret:=Fd End;
+        Fd:=NewFd(F); If Fd<0 Then E:=EMFILE Else Begin FRef(F); C.Ret:=Fd End;
        End;
       End;
   42: Begin
@@ -4126,33 +4157,33 @@ Begin
         Fd:=NewFd(R);
         If Fd<0 Then Begin FClose(R); FClose(W); E:=EMFILE End
         Else Begin
-         Ret:=Fd; Fd:=NewFd(W);
+         C.Ret:=Fd; Fd:=NewFd(W);
          If Fd<0 Then Begin
-          Procs[Cur].Fd[Ret]:=0; FClose(R); FClose(W); E:=EMFILE;
-         End Else Begin Ret2:=Fd; SetDX:=True End;
+          Procs[Cur].Fd[C.Ret]:=0; FClose(R); FClose(W); E:=EMFILE;
+         End Else Begin C.Ret2:=Fd; C.SetDX:=True End;
         End;
        End;
       End;
-  45: Ret:=Procs[Cur].Size;
+  45: C.Ret:=Procs[Cur].Size;
   48: Begin
-       If (RBX<1) Or (RBX>15) Or (RBX=SIGKILL) Then E:=EINVAL
+       If (C.RBX<1) Or (C.RBX>15) Or (C.RBX=SIGKILL) Then E:=EINVAL
        Else Begin
-        Ret:=Ord(Procs[Cur].SigIgn And (1 Shl RBX)<>0);
-        If RCX=1 Then Procs[Cur].SigIgn:=Procs[Cur].SigIgn Or (1 Shl RBX)
-        Else Procs[Cur].SigIgn:=Procs[Cur].SigIgn And Not (1 Shl RBX);
+        C.Ret:=Ord(Procs[Cur].SigIgn And (1 Shl C.RBX)<>0);
+        If C.RCX=1 Then Procs[Cur].SigIgn:=Procs[Cur].SigIgn Or (1 Shl C.RBX)
+        Else Procs[Cur].SigIgn:=Procs[Cur].SigIgn And Not (1 Shl C.RBX);
        End;
       End;
   54: E:=SysIoctl;
   63: Begin
-       E:=GetFile(RBX,F);
-       If (F<>0) And (RCX>=NOFILE) Then E:=EBADF;
-       If (E=0) And (RBX<>RCX) Then Begin
-        If Procs[Cur].Fd[RCX]<>0 Then FClose(Procs[Cur].Fd[RCX]);
-        Procs[Cur].Fd[RCX]:=F; FRef(F);
+       E:=GetFile(C.RBX,F);
+       If (F<>0) And (C.RCX>=NOFILE) Then E:=EBADF;
+       If (E=0) And (C.RBX<>C.RCX) Then Begin
+        If Procs[Cur].Fd[C.RCX]<>0 Then FClose(Procs[Cur].Fd[C.RCX]);
+        Procs[Cur].Fd[C.RCX]:=F; FRef(F);
        End;
-       Ret:=RCX;
+       C.Ret:=C.RCX;
       End;
-  64: Ret:=Procs[Cur].PPid;
+  64: C.Ret:=Procs[Cur].PPid;
   88: Begin
        KPrintLn('Redemarrage du systeme...');
        Asm
@@ -4165,46 +4196,46 @@ Begin
        End;
       End;
   106,108: Begin
-       If RAX=106 Then E:=Namei(UStr(RDS,RDX),Vn)
+       If C.RAX=106 Then E:=Namei(UStr(C.RDS,C.RDX),Vn)
        Else Begin
-        E:=GetFile(RBX,F);
+        E:=GetFile(C.RBX,F);
         If F<>0 Then Begin Vn:=Files[F].Vn; VRef(Vn) End;
        End;
-       If E=0 Then Begin FillStat(Vn,RES,RDI); VPut(Vn) End;
+       If E=0 Then Begin FillStat(Vn,C.RES,C.RDI); VPut(Vn) End;
       End;
   122: Begin
-       PutPStr(RDS,RDX,'UNIX-0',15);
-       PutPStr(RDS,RDX+16,'unix0',15);
-       PutPStr(RDS,RDX+32,KVersion,15);
-       PutPStr(RDS,RDX+48,'2026',15);
-       PutPStr(RDS,RDX+64,'i8086',15);
+       PutPStr(C.RDS,C.RDX,'UNIX-0',15);
+       PutPStr(C.RDS,C.RDX+16,'unix0',15);
+       PutPStr(C.RDS,C.RDX+32,KVersion,15);
+       PutPStr(C.RDS,C.RDX+48,'2026',15);
+       PutPStr(C.RDS,C.RDX+64,'i8086',15);
       End;
   141: E:=SysGetDents;
   158: RunRun:=True;
   162: Begin
-       Procs[Cur].Wake:=Ticks+(Longint(RBX)*182) Div 10+1;
+       Procs[Cur].Wake:=Ticks+(Longint(C.RBX)*182) Div 10+1;
        If Not SleepIntr(CHSLEEP) Then E:=EINTR;
        Procs[Cur].Wake:=0;
       End;
   183: Begin
        P:=Procs[Cur].Cwd;
-       If Length(P)+1>RCX Then E:=ERANGE
-       Else PutFarStr(RDS,RDX,P);
-       Ret:=Length(P);
+       If Length(P)+1>C.RCX Then E:=ERANGE
+       Else PutFarStr(C.RDS,C.RDX,P);
+       C.Ret:=Length(P);
       End;
   200: E:=SysProcInfo;
   201: Begin
-       Procs[Cur].DosOfs:=RBX; Procs[Cur].DosSeg:=RCX;
+       Procs[Cur].DosOfs:=C.RBX; Procs[Cur].DosSeg:=C.RCX;
        SetDosVector(Cur);
       End;
   202: Begin
-       MemW[RDS:RDX]:=TotalParas;
-       MemW[RDS:RDX+2]:=CoreFreeTotal;
-       MemW[RDS:RDX+4]:=KernelEnd-$1000;
-       MemW[RDS:RDX+6]:=NBUF;
+       MemW[C.RDS:C.RDX]:=TotalParas;
+       MemW[C.RDS:C.RDX+2]:=CoreFreeTotal;
+       MemW[C.RDS:C.RDX+4]:=KernelEnd-$1000;
+       MemW[C.RDS:C.RDX+6]:=NBUF;
        F:=0; For I:=1 To NPROC-1 Do If Procs[I].Stat<>PFREE Then Inc(F);
-       MemW[RDS:RDX+8]:=F;
-       MemW[RDS:RDX+10]:=NPROC-1;
+       MemW[C.RDS:C.RDX+8]:=F;
+       MemW[C.RDS:C.RDX+10]:=NPROC-1;
       End;
   203: E:=SysMountInfo;
   Else E:=ENOSYS;
@@ -4212,9 +4243,9 @@ Begin
  If E<>0 Then Begin
   SetUserW(0,E); SetUserW(22,UserW(22) Or 1);
  End Else Begin
-  SetUserW(0,Word(Ret)); SetUserW(22,UserW(22) And $FFFE);
-  If SetDX Then Begin
-   If RAX In [7,42] Then SetUserW(6,Word(Ret2)) Else SetUserW(6,Word(Ret Shr 16));
+  SetUserW(0,Word(C.Ret)); SetUserW(22,UserW(22) And $FFFE);
+  If C.SetDX Then Begin
+   If C.RAX In [7,42] Then SetUserW(6,Word(C.Ret2)) Else SetUserW(6,Word(C.Ret Shr 16));
   End;
  End;
  CheckSignals;
@@ -4368,8 +4399,8 @@ BEGIN
  CoreInit(KernelEnd,MemTop);
  KStk:=CoreAlloc(NPROC*KSTKPARAS);
  If KStk=0 Then Panic('pas de memoire pour les piles noyau');
- FarFill(KStk,0,NPROC*KSTKPARAS*16,$CC);
  For I:=0 To NPROC-1 Do Begin
+  FarFill(KStk+I*KSTKPARAS,0,KSTKTOP,$CC);   { motif de detection }
   FillChar(Procs[I],SizeOf(TProc),0);
   Procs[I].KStack:=KStk+I*KSTKPARAS;
   Procs[I].Cwd:='/';
@@ -4385,6 +4416,7 @@ BEGIN
  ShowDisks;
  { vecteurs d'interruption }
  SysHook:=@SysDispatch; PreemptHook:=@PreemptEntry; FaultHook:=@FaultEntry;
+ KSysInit;
  IdleHook:=@TtyPoll;
  OldInt08:=GetVector($08); OldInt1B:=GetVector($1B);
  SetVector($80,Seg(Int80Stub),Ofs(Int80Stub));

@@ -32,9 +32,11 @@ MAKEFS=${MAKEFS:-makefs}
 rm -rf "$W"; mkdir -p "$W/bin" "$W/src" "$W/log"
 
 echo "== Outils (Free Pascal)"
-$FPC -Mtp -O1 -FE"$W/bin" -o"$W/bin/upc" "$ROOT/TOOLS/UPC.PAS" > "$W/log/upc.log" 2>&1 ||
+# copies : TOOLS/UNIX.PAS (unite de UNIX-0) masquerait l'unite unix de FPC
+mkdir -p "$W/tools"; cp "$ROOT/TOOLS/UPC.PAS" "$ROOT/TOOLS/MKIMAGE.PAS" "$W/tools/"
+( cd "$W/tools" && $FPC -Mtp -O1 -FE"$W/bin" -o"$W/bin/upc" UPC.PAS ) > "$W/log/upc.log" 2>&1 ||
   { tail -20 "$W/log/upc.log"; exit 1; }
-$FPC -Mtp -O1 -FE"$W/bin" -o"$W/bin/mkimage" "$ROOT/TOOLS/MKIMAGE.PAS" > "$W/log/mkimage.log" 2>&1 ||
+( cd "$W/tools" && $FPC -Mtp -O1 -FE"$W/bin" -o"$W/bin/mkimage" MKIMAGE.PAS ) > "$W/log/mkimage.log" 2>&1 ||
   { tail -20 "$W/log/mkimage.log"; exit 1; }
 rm -f "$W/bin"/*.o
 UPC="$W/bin/upc"
@@ -92,7 +94,7 @@ if command -v "$MAKEFS" >/dev/null; then
   cp "$ROOT"/*.PAS "$HERE/KERNEL.PAS" "$HERE/INIT.PAS" "$W/ufs/src/"
   cp "$ROOT/README.md" "$W/ufs/doc/" 2>/dev/null || true
   printf 'Ce systeme de fichiers est un UFS1 (FreeBSD) monte sur /usr.\n' > "$W/ufs/LISEZMOI"
-  $MAKEFS -t ffs -o version=1 -s 8m "$W/ufs.img" "$W/ufs" > "$W/log/makefs.log"
+  $MAKEFS -t ffs -o version=1 -s 8m -f 1024 "$W/ufs.img" "$W/ufs" > "$W/log/makefs.log"
   UFSIMG="$W/ufs.img"
 fi
 "$W/bin/mkimage" HD "$ROOT/IMAGES/UNIX0-HD.IMG" "$HERE/MBR.BIN" "$HERE/BOOTSECT.BIN" "$W/hd" 24 $UFSIMG
