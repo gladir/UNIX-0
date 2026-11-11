@@ -1012,6 +1012,24 @@ Begin
  D:=Days+1;
 End;
 
+Procedure DosDiskFree;
+{ 36h : unite 0 (par defaut) ou 3 (C:) = systeme de fichiers du repertoire
+  courant (racine sinon); grappes de 1 Ko }
+Var M: TMountInfo; I,Best,L: Integer; Cwd: String; T,F: Longint;
+Begin
+ If Not (Lo(RDX) In [0,3]) Then Begin RAX:=$FFFF; Exit End;
+ Cwd:=SysGetCwd; Best:=0; L:=-1;
+ For I:=1 To 8 Do
+  If SysMountInfo(I,M) Then
+   If (M.Dir='/') Or (Copy(Cwd,1,Length(M.Dir))=M.Dir) Then
+    If Length(M.Dir)>L Then Begin Best:=I; L:=Length(M.Dir) End;
+ If (Best=0) Or Not SysMountInfo(Best,M) Then Begin RAX:=$FFFF; Exit End;
+ T:=M.Blocks; F:=M.Free;
+ If T>65535 Then Begin T:=65535 End;
+ If F>T Then F:=T;
+ RAX:=2; RCX:=512; RBX:=F; RDX:=T;
+End;
+
 Procedure DosService;
 { Traduit le service DOS dont les registres sont dans RAX..RFL }
 Var
@@ -1073,7 +1091,7 @@ Begin
   $2E,$54: RAX:=RAX And $FF00;
   $30: Begin RAX:=$0005; RBX:=$FF00; RCX:=0 End; { version 5.0 }
   $33: RDX:=RDX And $FF00;
-  $36: Begin RAX:=1; RBX:=1024; RCX:=512; RDX:=2048 End;
+  $36: DosDiskFree;
   $39: If SysMkdir(UnixPath(FarString(RDS,RDX)),$1ED)<0 Then Fail;
   $3A: If SysRmdir(UnixPath(FarString(RDS,RDX)))<0 Then Fail;
   $3B: If SysChdir(UnixPath(FarString(RDS,RDX)))<0 Then SetCarry(3);

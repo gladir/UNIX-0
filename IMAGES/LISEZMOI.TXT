@@ -1,0 +1,27 @@
+Images de disque amorcables de UNIX-0 (produites par KERNEL16/BUILD.SH)
+=====================================================================
+
+UNIX0-144.IMG  disquette 1,44 Mo FAT12 : noyau /UNIX, /etc/init et les
+               commandes essentielles dans /bin (sh, ls, cat, cp, mv, grep,
+               df, du, dd, ...).
+UNIX0-288.IMG  disquette 2,88 Mo FAT12 : les 52 commandes du depot UNIX-0.
+UNIX0-HD.IMG   disque dur de 32 Mo (16 tetes, 63 secteurs par piste) :
+               partition 1 FAT16 active (racine, toutes les commandes) et
+               partition 2 de type A5h contenant un systeme de fichiers UFS1
+               (FreeBSD), monte sur /usr (sources du projet dans /usr/src).
+
+Demarrage sous QEMU :
+
+  qemu-system-i386 -drive file=UNIX0-144.IMG,format=raw,if=floppy -boot a
+  qemu-system-i386 -drive file=UNIX0-288.IMG,format=raw,if=floppy -boot a
+  qemu-system-i386 -drive file=UNIX0-HD.IMG,format=raw,if=ide -boot c
+
+Option utile : -serial stdio (la console du noyau est recopiee sur COM1, et
+COM1 sert aussi de clavier).
+
+Sous Bochs, DOSBox (boot), 86Box, PCem ou un vrai PC, les images s'emploient
+de la meme facon (disquette ou disque dur).
+
+Dans l'interpreteur de commandes (SH du depot) : ls, cat, cd, pwd, mkdir,
+rm, cp, mv, ... sont internes; un programme se lance par
+"exec /bin/programme arguments", par exemple "exec /bin/df".

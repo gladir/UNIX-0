@@ -15,6 +15,9 @@ Var
 
 Function OSVersion:String;Begin
  OSVersion:='MS-DOS';
+ {$IFDEF UNIX0}
+  OSVersion:='UNIX-0'; Exit;
+ {$ENDIF}
   {$IFDEF LCLcarbon}
    OSVersion := 'Mac OS X';
   {$ELSE}

@@ -173,6 +173,8 @@ Begin
  CountEntries:=N;
 End;
 
+Var VolLabel: String[11];
+
 Procedure AddDirectory(Path: String; Self, Parent: Longint; IsRoot: Boolean);
 { Recopie le repertoire hote Path. Self = premier cluster du repertoire
   (0 = racine), Parent = cluster du parent (0 = racine). }
@@ -194,6 +196,10 @@ Begin
   MakeEntry(D^,0,'.          ',$10,Self,0);
   MakeEntry(D^,32,'..         ',$10,Parent,0);
   Used:=64;
+ End Else Begin
+  { nom de volume : premiere entree de la racine (comme dans le BPB) }
+  MakeEntry(D^,0,VolLabel,$08,0,0);
+  Used:=32;
  End;
  Count:=0;
  FindFirst(Path+'/*',AnyFile,R);
@@ -303,6 +309,7 @@ Begin
  If Fat16 Then Move('FAT16   ',Boot[$36],8) Else Move('FAT12   ',Boot[$36],8);
  WriteSectors(PartLBA,Boot,1);
  FileCount:=0; DirCount:=0;
+ VolLabel:=Label11;
  AddDirectory(Dir,0,0,True);
  For I:=NextFree To ClusterCount+1 Do Fat^[I]:=0;
  If Not Fat16 Then For I:=0 To ClusterCount+1 Do Fat^[I]:=Fat^[I] And $FFF;
