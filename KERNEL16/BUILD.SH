@@ -12,7 +12,9 @@
 #  2. assemble le secteur d'amorce et le MBR (nasm), si nasm est present
 #     (sinon les fichiers BOOTSECT.BIN et MBR.BIN deja fournis sont utilises);
 #  3. compile le noyau : UPC /K KERNEL.PAS -> KERNEL.SYS (copie sous le nom
-#     UNIX a la racine des disques);
+#     UNIX a la racine des disques), puis le noyau avec le reseau (UPC /K
+#     /DNET, fichiers inclus de KERNEL16/NET) -> KERNELNET.SYS, installe
+#     sous le nom /unixnet (amorce des supports d'installation);
 #  4. compile /etc/init, les programmes systeme de KERNEL16/USR (sh, getty,
 #     login, passwd, ps, kill, id, mkdir, rmdir, rm) et toutes les commandes
 #     UNIX-0 du depot (*.PAS) avec UPC /X (appels systeme UNIX-0); le SH du
@@ -58,7 +60,8 @@ if command -v "$NASM" >/dev/null; then
 fi
 
 echo "== Noyau"
-cp "$HERE/KERNEL.PAS" "$W/src/"
+cp "$HERE/KERNEL.PAS" "$W/src/"; rm -rf "$W/src/NET"; cp -r "$HERE/NET" "$W/src/NET"
+( cd "$W/src" && "$UPC" /K /DNET KERNEL.PAS && mv KERNEL.SYS KERNELNET.SYS ) | tail -1
 ( cd "$W/src" && "$UPC" /K KERNEL.PAS ) | tail -2
 
 echo "== Programmes (UPC /X)"
@@ -90,6 +93,10 @@ mkroot() {   # mkroot REPERTOIRE LISTE_DE_COMMANDES
   { printf 'root::0:0:Super-utilisateur:/:/bin/sh\n'
     printf 'invite:%s:100:100:Invite:/home/invite:/bin/sh\n' "$(crypt invite ab)"; } > "$d/etc/passwd"
   printf '10console\n' > "$d/etc/ttys"
+  # demarrage (init lance sh /etc/rc), nom de la machine, hotes connus
+  printf '# /etc/rc : commandes du demarrage, lancees par init (sh /etc/rc)\nread NOM < /etc/myname && hostname $NOM\n' > "$d/etc/rc"
+  printf 'unix0\n' > "$d/etc/myname"
+  printf '127.0.0.1\tlocalhost\n' > "$d/etc/hosts"
   mkdir -p "$d/home/invite"
   for c in "$@"; do
     case $c in
@@ -102,7 +109,10 @@ mkroot() {   # mkroot REPERTOIRE LISTE_DE_COMMANDES
 # hachage des mots de passe (meme calcul que KERNEL16/USR/CRYPT.INC)
 crypt() { "$W/bin/mkpasswd" "$1" "$2"; }
 ALL=$(cd "$W/src" && ls *.PAS | sed 's/\.PAS$//' | grep -v -x -e KERNEL -e INIT -e GETTY)
-CORE="SHELL LOGIN PASSWD PS KILL ID MKDIR RMDIR RM CAT LS ECHO PWD CP MV CHMOD HEAD WC GREP DF UNAME REBOOT"
+CORE="SHELL LOGIN PASSWD PS KILL ID MKDIR RMDIR RM CAT LS ECHO PWD CP MV CHMOD HEAD WC GREP DF UNAME REBOOT HOSTNAME"
+# commandes du reseau (noyau /unixnet) : pas sur les disquettes, dont le
+# noyau est sans reseau
+NETCMDS="IFCONFIG ROUTE NETSTAT ARP PING HOST DHCLIENT NC TELNET FETCH HTTPD"
 
 mkdir -p "$ROOT/IMAGES"
 echo "== Disquette 1,44 Mo"
@@ -110,7 +120,7 @@ mkroot "$W/fd144" $CORE
 "$W/bin/mkimage" FLOPPY "$ROOT/IMAGES/UNIX0-144.IMG" "$HERE/BOOTSECT.BIN" "$W/fd144" 1440
 echo "== Disquette 2,88 Mo"
 # sans les interpreteurs de style DOS BASH, CSH et KSH (sur le disque dur)
-mkroot "$W/fd288" $(echo $ALL | tr ' ' '\n' | grep -v -x -e BASH -e CSH -e KSH)
+mkroot "$W/fd288" $(echo $ALL | tr ' ' '\n' | grep -v -x -e BASH -e CSH -e KSH -e SH -e INSTALL $(printf " -e %s" $NETCMDS))
 "$W/bin/mkimage" FLOPPY "$ROOT/IMAGES/UNIX0-288.IMG" "$HERE/BOOTSECT.BIN" "$W/fd288" 2880
 echo "== Disque dur (FAT16 d'amorce + racine UFS)"
 mkroot "$W/hd" $ALL
@@ -124,6 +134,7 @@ setperms() {
   find "$d" -type f -exec chmod 644 {} +
   chmod 755 "$d"/bin/* "$d/etc/init" "$d/etc/getty"
   chmod 4755 "$d/bin/passwd"
+  [ -f "$d/bin/ping" ] && chmod 4755 "$d/bin/ping"
   chmod 777 "$d/tmp" "$d/usr/tmp"
   chown -R 100:100 "$d/home/invite"
 }
@@ -132,7 +143,13 @@ if command -v "$MAKEFS" >/dev/null; then
   # partition FAT16 d'amorce ne contient que le noyau (montee sur /boot)
   # le noyau est /unix, comme sous UNIX V7 (charge par UFSBOOT)
   rm -rf "$W/ufsroot"; cp -a "$W/hd" "$W/ufsroot"; mv "$W/ufsroot/UNIX" "$W/ufsroot/unix"
+  # noyau avec le reseau (cp /unixnet /unix pour l'utiliser)
+  cp "$W/src/KERNELNET.SYS" "$W/ufsroot/unixnet"
   mkdir -p "$W/ufsroot/usr/src" "$W/ufsroot/usr/doc" "$W/ufsroot/usr/tmp"
+  # pages du serveur HTTP (httpd)
+  mkdir -p "$W/ufsroot/usr/www"
+  printf '<html><head><title>UNIX-0</title></head><body>\n<h1>UNIX-0</h1>\n<p>Ce document est servi par httpd, sur UNIX-0 (noyau 16 bits pour IBM PC 8086, reseau TCP/IP).</p>\n<p><a href="/doc/">Documentation</a></p>\n</body></html>\n' > "$W/ufsroot/usr/www/index.html"
+  mkdir -p "$W/ufsroot/usr/www/doc"; cp "$HERE/LISEZMOI.md" "$W/ufsroot/usr/www/doc/" 2>/dev/null || true
   cp "$ROOT"/*.PAS "$HERE/KERNEL.PAS" "$HERE/INIT.PAS" "$HERE"/USR/*.PAS "$W/ufsroot/usr/src/"
   cp "$ROOT/README.md" "$HERE/LISEZMOI.md" "$W/ufsroot/usr/doc/" 2>/dev/null || true
   setperms "$W/ufsroot"
@@ -159,7 +176,9 @@ fi
 if [ -d "$W/ufsroot" ]; then
   echo "== Distribution (installation)"
   rm -f "$ROOT"/IMAGES/UNIX0-INST*.IMG
-  mkroot "$W/inst" SHELL LOGIN INSTALL LS CAT PS MKDIR RM ECHO REBOOT
+  mkroot "$W/inst" SHELL LOGIN INSTALL LS CAT PS MKDIR RM ECHO REBOOT HOSTNAME IFCONFIG
+  # noyau avec le reseau : l'installateur voit les cartes presentes
+  cp "$W/src/KERNELNET.SYS" "$W/inst/UNIX"
   mkdir -p "$W/inst/mdec"
   cp "$HERE/MBR.BIN" "$W/inst/mdec/mbr"; cp "$HERE/BOOTSECT.BIN" "$W/inst/mdec/bootsect"
   cp "$HERE/UFSBOOT.BIN" "$W/inst/mdec/ufsboot"

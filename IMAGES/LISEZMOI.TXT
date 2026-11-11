@@ -5,25 +5,33 @@ UNIX0-144.IMG  disquette 1,44 Mo FAT12 : noyau /UNIX, /etc/init, getty,
                login, /etc/passwd et les commandes essentielles dans /bin
                (sh, ls, cat, cp, mv, rm, mkdir, grep, ps, kill, passwd, ...).
 UNIX0-288.IMG  disquette 2,88 Mo FAT12 : les commandes du depot UNIX-0
-               (sauf les interpreteurs de style DOS bash, csh et ksh).
+               (sauf les interpreteurs de style DOS bash, csh et ksh, et
+               les commandes du reseau : le noyau des disquettes est sans
+               reseau).
 UNIX0-HD.IMG   disque dur de 20 Mo (16 tetes, 63 secteurs par piste) amorce
                directement sur UFS : partition 1 active de type A5h, un
                systeme de fichiers UFS1 (FreeBSD) avec l'amorce UFS dans
                ses 8 premiers Ko, le noyau /unix, toutes les commandes et
                les sources dans /usr/src; partition 2 de type 82h (4 Mo) :
-               la zone de va-et-vient (swap) du noyau.
+               la zone de va-et-vient (swap) du noyau. Le noyau avec le
+               reseau TCP/IP est /unixnet : "cp /unixnet /unix" puis
+               redemarrer pour l'utiliser (carte NE2000 ISA ou PCI, ou
+               pilote de paquets), voir plus bas.
 
 Distribution (installation sur un disque dur, programme /bin/install) :
 
-UNIX0-INST1.IMG  disquette 1,44 Mo FAT12 amorcable : noyau, init, getty,
+UNIX0-INST1.IMG  disquette 1,44 Mo FAT12 amorcable : noyau avec le reseau
+                 (l'installateur voit les cartes presentes), init, getty,
                  login, sh, l'installateur et quelques commandes, plus les
-                 secteurs d'amorce du disque dur (/mdec/mbr, /mdec/bootsect).
-UNIX0-INST2.IMG  disquettes de donnees : la racine complete du systeme (64
-a INST4.IMG      commandes, /etc, sources dans /usr/src) en volumes tar
-                 ecrits directement sur la disquette (sans systeme de
-                 fichiers), comme les bandes de distribution de UNIX V7.
-                 Il faut donc 4 disquettes de 1,44 Mo en tout : 1 d'amorce
-                 et 3 de donnees (le nombre est recalcule par BUILD.SH).
+                 amorces du disque dur (/mdec/mbr, /mdec/ufsboot,
+                 /mdec/bootsect).
+UNIX0-INST2.IMG  disquettes de donnees : la racine complete du systeme (les
+a INST5.IMG      deux noyaux /unix et /unixnet, 74 commandes, /etc, sources
+                 dans /usr/src) en volumes tar ecrits directement sur la
+                 disquette (sans systeme de fichiers), comme les bandes de
+                 distribution de UNIX V7. Il faut donc 5 disquettes de
+                 1,44 Mo en tout : 1 d'amorce et 4 de donnees (le nombre
+                 est recalcule par BUILD.SH).
 UNIX0-CD.ISO     CD-ROM ISO 9660 amorcable (El Torito, emulation de disque
                  dur) : la disquette 1 et les volumes dans /dist.
 
@@ -32,15 +40,19 @@ sous le nom "install", choisir le disque et le type d'installation :
   1) UFS seul (par defaut) : racine UFS1 amorcee directement (noyau /unix)
   2) FAT16 d'amorce (4 Mo, noyau) + racine UFS1
   3) FAT16 seul (sans permissions UNIX)
-confirmer, puis inserer les disquettes 2, 3 et 4 a la demande. Une zone
-de va-et-vient de 4 Mo est toujours creee. Le disque doit faire au moins
+puis le reseau : aucun, ou une carte (NE2000 ISA ou PCI, pilote de
+paquets), avec TCP/IP par DHCP (par defaut) ou une adresse fixe, et le nom
+de la machine. Confirmer, puis inserer les disquettes 2 a 5 a la demande.
+Une zone de va-et-vient de 4 Mo est toujours creee. Avec une carte, le
+noyau installe est /unixnet et /etc/netstart configure le reseau a chaque
+demarrage. Le disque doit faire au moins
 16 Mo; seuls les 1024 premiers cylindres du BIOS sont utilises (504 Mo).
 Avec le CD-ROM, le BIOS presente le CD comme premier disque dur (hda) :
 l'installation se fait sur hdb, qui demarrera ensuite comme 80h.
 
   qemu-system-i386 -fda UNIX0-INST1.IMG -hda disque.img -boot a
       (dans le moniteur de QEMU, Ctrl+Alt+2 :
-       change floppy0 UNIX0-INST2.IMG, puis 3 et 4)
+       change floppy0 UNIX0-INST2.IMG, puis 3, 4 et 5)
   qemu-system-i386 -cdrom UNIX0-CD.ISO -hda disque.img -boot d
   qemu-system-i386 -hda disque.img -boot c       (le systeme installe)
 
@@ -82,3 +94,15 @@ UNIX (PATH, < > >> 2>, |, &, ;, &&, ||, $VAR, * ? [...]) :
 ^C interrompt la commande en cours, ^\ l'abandonne (fichier core), ^D a
 l'invite termine la session (getty propose une nouvelle connexion).
 L'ancien interpreteur de style DOS du depot reste disponible : /bin/shdos.
+
+Reseau sous QEMU (reseau "user" : passerelle et serveur DHCP 10.0.2.2,
+DNS 10.0.2.3; port 80 de UNIX-0 joint par http://localhost:8080/) :
+  qemu-system-i386 -hda disque.img -boot c -netdev user,id=n0,hostfwd=tcp::8080-:80
+      -device ne2k_isa,netdev=n0,iobase=0x300,irq=3     (ou ne2k_pci,netdev=n0)
+puis, si l'installation n'a pas configure la carte :
+  dhclient ne0        (ou : ifconfig ne0 10.0.2.15 netmask 255.255.255.0 up
+                            route add default 10.0.2.2)
+  ping 10.0.2.2; fetch http://10.0.2.2:8000/fichier; httpd &; netstat
+Pilote de paquets (INT 60h, interface pk0) : ecrit selon la specification
+mais pas encore essaye (le pilote emule par DEVENV ne repond pas aux appels
+INT 60h d'un systeme amorce, voir KERNEL16/LISEZMOI.md).

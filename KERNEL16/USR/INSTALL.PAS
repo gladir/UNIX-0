@@ -18,9 +18,17 @@
        cylindres du BIOS; le va-et-vient fait 4 Mo (type 82h);
     3. formatage FAT16 et creation du systeme de fichiers UFS1 (comme
        newfs), amorces;
-    4. copie du noyau, puis extraction des volumes tar de la distribution
-       (disquettes 2, 3, ... lues directement sur /dev/fd0, ou fichiers
-       /dist/volN.tar du CD-ROM), avec modes, proprietaires et dates.
+    4. extraction des volumes tar de la distribution (disquettes 2, 3, ...
+       lues directement sur /dev/fd0, ou fichiers /dist/volN.tar du
+       CD-ROM), avec modes, proprietaires et dates, puis mise en place du
+       noyau : /unix, ou /unixnet (noyau avec le reseau) si une carte est
+       configuree;
+    5. reseau (facultatif) : carte (celles que le noyau d'installation a
+       detectees : NE2000 ISA ou PCI, pilote de paquets), protocole TCP/IP
+       par DHCP ou adresse fixe (masque, passerelle, serveur de noms), nom
+       de la machine, serveur HTTP au demarrage; fichiers /etc/myname,
+       /etc/netstart (lance par init apres /etc/rc), /etc/hosts,
+       /etc/resolv.conf.
    Sur la disquette ou le CD d'installation, l'utilisateur "install" a ce
    programme pour interpreteur de connexion.
    Usage : install
@@ -30,6 +38,8 @@ Program Install;
 
 {$M 8192,0,0}
 {$I-}
+
+{$I NET.INC}
 
 Const
  { UFS1 : memes parametres que makefs -t ffs -o version=1 }
@@ -66,14 +76,13 @@ Var
  VolFd: Integer;
  RBuf: Array[0..8191] Of Byte;
  RLen,RPos: Integer;
+ { reseau }
+ NetIf: String[7];                   { '' : pas de reseau }
+ NetDhcp, NetHttpd: Boolean;
+ NetIp, NetMask, NetGw, NetDns: Longint;
+ NetName: String[31];
 
 { --- utilitaires ----------------------------------------------------- }
-
-Function IStr(L: Longint): String;
-Var S: String;
-Begin
- Str(L,S); IStr:=S;
-End;
 
 Procedure Fatal(S: String);
 Begin
@@ -575,14 +584,20 @@ Begin
    Inc(Dirs);
   End Else Begin
    Fd:=SysCreat(Name,$180);
-   If Fd<0 Then Fatal(Name+' : '+SysErrorText(Errno));
+   If (Fd<0) And (Errno=ENAMETOOLONG) And (UfsPart='') Then Begin
+    { racine FAT16 : nom qui n'entre pas dans le format 8.3 }
+    WriteLn;
+    Write('  ',Copy(Name,5,255),' : nom trop long pour FAT, ignore ');
+   End Else If Fd<0 Then Fatal(Name+' : '+SysErrorText(Errno));
    Left:=Size;
    While Left>0 Do Begin
     If Not ReadBlock(Sec) Then Fatal('volume '+IStr(Num)+' incomplet');
     If Left>512 Then N:=512 Else N:=Left;
-    If SysWrite(Fd,Sec,N)<>N Then Fatal(Name+' : '+SysErrorText(Errno));
+    If Fd>=0 Then
+     If SysWrite(Fd,Sec,N)<>N Then Fatal(Name+' : '+SysErrorText(Errno));
     Dec(Left,N);
    End;
+   If Fd<0 Then Continue;
    SysClose(Fd);
    SysChown(Name,Uid,Gid); SysChmod(Name,Mode);
    SysUtime(Name,MTime,MTime);
@@ -628,6 +643,129 @@ End;
 Var
  St: TStat;
 
+{ --- 5. reseau ------------------------------------------------------- }
+
+Function AskAddr(Prompt: String; Def: Longint; Empty: Boolean): Longint;
+{ adresse IP en notation pointee (Def si la reponse est vide) }
+Var S: String; A: Longint;
+Begin
+ Repeat
+  S:=Ask(Prompt);
+  If S='' Then Begin
+   If (Def<>0) Or Empty Then Begin AskAddr:=Def; Exit End;
+  End Else If InetAddr(S,A) Then Begin AskAddr:=A; Exit End;
+  WriteLn('Adresse invalide (exemple : 192.168.1.10).');
+ Until False;
+End;
+
+Procedure ChooseNet;
+{ carte reseau et protocole TCP/IP }
+Var S: String; F: TIfInfo; I,N,C,E,Def: Integer; Names: Array[2..6] Of String[7];
+Begin
+ NetIf:=''; NetDhcp:=True; NetHttpd:=False;
+ NetIp:=0; NetMask:=0; NetGw:=0; NetDns:=0;
+ WriteLn('Reseau :');
+ WriteLn('  1) pas de reseau');
+ N:=1;
+ For I:=0 To 7 Do
+  If (N<5) And IfInfo(I,F) Then
+   If F.Drv<>DRV_LOOP Then Begin
+    Inc(N); Names[N]:=CStr(F.Name,8);
+    Write('  ',N,') ',Names[N],' : ',CStr(F.Model,24));
+    If F.Drv=DRV_NE2000 Then Begin
+     Write(', port ',HexB(Hi(F.IoBase)),HexB(Lo(F.IoBase)),'h');
+     If F.Irq<>0 Then Write(', IRQ ',F.Irq);
+    End;
+    If F.Drv=DRV_NE2000 Then Write(', ',MacText(F.Mac));
+    WriteLn;
+   End;
+ Def:=1;
+ If N>1 Then Def:=2
+ Else Begin
+  { aucune carte vue au demarrage : celles que le noyau sait piloter }
+  WriteLn('  2) carte NE2000 ou compatible (ISA ou PCI)'); Names[2]:='ne0';
+  WriteLn('  3) pilote de paquets (INT 60h, par exemple DEVENV)'); Names[3]:='pk0';
+  WriteLn('  (aucune carte detectee au demarrage)');
+  N:=3;
+ End;
+ S:=Ask('Choix ['+IStr(Def)+'] : ');
+ C:=Def;
+ If S<>'' Then Val(S,C,E);
+ If (C<1) Or (C>N) Then Fatal('choix invalide');
+ If C>1 Then Begin
+  NetIf:=Names[C];
+  WriteLn('Protocole TCP/IP de ',NetIf,' :');
+  WriteLn('  1) configuration automatique par DHCP (recommande)');
+  WriteLn('  2) adresse fixe');
+  S:=Ask('Choix [1] : ');
+  NetDhcp:=(S='') Or (S='1');
+  If Not NetDhcp And (S<>'2') Then Fatal('choix invalide');
+  If Not NetDhcp Then Begin
+   NetIp:=AskAddr('Adresse IP : ',0,False);
+   NetMask:=AskAddr('Masque [255.255.255.0] : ',$00FFFFFF,False);
+   NetGw:=AskAddr('Passerelle (vide : aucune) : ',0,True);
+   NetDns:=AskAddr('Serveur de noms (vide : aucun) : ',0,True);
+  End;
+ End;
+ NetName:=Ask('Nom de la machine [unix0] : ');
+ If NetName='' Then NetName:='unix0';
+ If NetIf<>'' Then NetHttpd:=Yes('Lancer le serveur HTTP (httpd) au demarrage ?');
+End;
+
+Procedure WriteText(Path, Text: String);
+Var Fd: Integer;
+Begin
+ Fd:=SysCreat(Path,$1A4);
+ If Fd<0 Then Fatal(Path+' : '+SysErrorText(Errno));
+ If Text<>'' Then SysWrite(Fd,Text[1],Length(Text));
+ SysClose(Fd);
+End;
+
+Procedure Kernel;
+{ noyau actif : /unix, ou /unixnet si le reseau est configure }
+Var Src,Dst: String;
+Begin
+ Src:='/mnt/unix';
+ If NetIf<>'' Then Src:='/mnt/unixnet';
+ Case Layout Of
+  2: Dst:='/mnt/boot/UNIX';
+  Else Dst:='/mnt/unix';
+ End;
+ Write('Noyau : ');
+ If Src<>Dst Then CopyFile(Src,Dst,$1A4);
+ If NetIf<>'' Then Write('avec le reseau (/unixnet)') Else Write('/unix');
+ If Layout=2 Then WriteLn(', copie dans /boot') Else WriteLn;
+End;
+
+Procedure NetConfig;
+{ /etc/myname, /etc/rc, et pour le reseau /etc/netstart (lance par init
+  apres /etc/rc), /etc/hosts, /etc/resolv.conf }
+Var T,H: String;
+Begin
+ WriteText('/mnt/etc/myname',NetName+#10);
+ T:='# /etc/rc : commandes du demarrage, lancees par init (sh /etc/rc)'#10+
+   'read NOM < /etc/myname && hostname $NOM'#10;
+ H:='127.0.0.1'#9'localhost'#10;
+ If NetIf<>'' Then Begin
+  If NetDhcp Then
+   WriteText('/mnt/etc/netstart','# /etc/netstart : reseau (ecrit par l''installation)'#10+
+     'dhclient '+NetIf+#10+Copy('httpd 2> /dev/null &'#10,1,Ord(NetHttpd)*255))
+  Else Begin
+   WriteText('/mnt/etc/netstart','# /etc/netstart : reseau (ecrit par l''installation)'#10+
+     'ifconfig '+NetIf+' '+InetNtoA(NetIp)+' netmask '+InetNtoA(NetMask)+' up'#10+
+     Copy('route add default '+InetNtoA(NetGw)+#10,1,Ord(NetGw<>0)*255)+
+     Copy('httpd 2> /dev/null &'#10,1,Ord(NetHttpd)*255));
+   H:=H+InetNtoA(NetIp)+#9+NetName+#10;
+   If NetDns<>0 Then WriteText('/mnt/etc/resolv.conf','nameserver '+InetNtoA(NetDns)+#10);
+  End;
+  WriteLn('Reseau : ',NetIf,', ',Copy('DHCP',1,Ord(NetDhcp)*4),
+    Copy(InetNtoA(NetIp),1,Ord(Not NetDhcp)*20),' (/etc/netstart)');
+ End;
+ WriteText('/mnt/etc/rc',T);
+ WriteText('/mnt/etc/hosts',H);
+End;
+
+
 BEGIN
  Now:=SysTime;
  FillChar(Zero,SizeOf(Zero),0);
@@ -641,11 +779,12 @@ BEGIN
  If LoadFile('/mdec/mbr',MbrCode,512)<>512 Then Fatal('/mdec/mbr invalide');
  If LoadFile('/mdec/bootsect',BootCode,512)<>512 Then Fatal('/mdec/bootsect invalide');
  If LoadFile('/mdec/ufsboot',UfsBoot,8192)<>8192 Then Fatal('/mdec/ufsboot invalide');
- If SysStat('/UNIX',St)<0 Then Fatal('/UNIX (noyau) introuvable');
  WriteLn;
  ChooseDisk;
  WriteLn;
  ChooseLayout;
+ WriteLn;
+ ChooseNet;
  WriteLn;
  WriteLn('ATTENTION : tout le contenu de /dev/',Disk,' sera efface.');
  If Not Yes('Continuer ?') Then Fatal('annulee par l''utilisateur');
@@ -655,7 +794,7 @@ BEGIN
  If FatPart<>'' Then FormatFat;
  If UfsPart<>'' Then NewFs;
  { montage du nouveau systeme sur /mnt (et de la partition d'amorce FAT16
-   sur /mnt/boot), puis copie du noyau }
+   sur /mnt/boot), extraction des volumes, noyau et configuration }
  If UfsPart<>'' Then Begin
   If SysMount('/dev/'+Disk+UfsPart,'/mnt',FS_UFS)<0 Then
    Fatal('montage de /dev/'+Disk+UfsPart+' : '+SysErrorText(Errno));
@@ -666,14 +805,10 @@ BEGIN
   If SysMount('/dev/'+Disk+FatPart,'/mnt/boot',FS_FAT)<0 Then
    Fatal('montage de /dev/'+Disk+FatPart+' : '+SysErrorText(Errno));
  End;
- Write('Copie du noyau...');
- Case Layout Of
-  1: Begin CopyFile('/UNIX','/mnt/unix',$1A4); WriteLn(' /unix') End;
-  2: Begin CopyFile('/UNIX','/mnt/boot/UNIX',$1A4); WriteLn(' /boot/unix') End;
-  3: Begin CopyFile('/UNIX','/mnt/UNIX',$1A4); WriteLn(' /unix') End;
- End;
  Files:=0; Dirs:=0;
  Volumes;
+ Kernel;
+ NetConfig;
  SysSync;
  If Layout=2 Then SysUmount('/mnt/boot');
  SysUmount('/mnt');
